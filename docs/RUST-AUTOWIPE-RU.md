@@ -134,18 +134,21 @@ rust-autowipe/                     ← каталог плагина (имя = n
 docs/
   RUST-AUTOWIPE-RU.md              этот документ
 
+index.json                         индекс маркетплейса (этот URL добавляют в панель)
+
 tools/
   test.mjs                         тесты backend-логики (23 проверки)
   ui-smoke.mjs                     дымовой тест UI на DOM-шиме
   pack.py                          сборка .catpkg.zip + sha256 + index.json
+  check_index.py                   проверка индекса/пакета/схемы plugin.json (он же в CI)
+  catalyst_manifest.py             повтор zod-схемы манифеста Catalyst
   push_to_github.mjs               публикация репозитория через GitHub REST API
 
-.github/workflows/ci.yml           CI: тесты + проверка манифеста
+.github/workflows/ci.yml           CI: тесты + проверка индекса и пакета
 
 dist/
   rust-autowipe-1.0.0.catpkg.zip
   rust-autowipe-1.0.0.catpkg.zip.sha256
-  index.json                       индекс для своего маркетплейса
 ```
 
 Размер пакета — ~38 КБ, зависимостей нет: backend — чистый ESM на `node:*` и `fetch`,
@@ -188,17 +191,58 @@ curl -X POST https://panel.example.com/api/plugins/install \
 
 `sha256` обязателен: панель проверяет дайджест до распаковки, без него — `CHECKSUM_REQUIRED`.
 
-### 4.3. Вариант C: свой индекс маркетплейса
+### 4.3. Вариант C: свой индекс маркетплейса (GitHub)
 
-`dist/index.json` уже сгенерирован; пересоберите с реальным URL:
+Репозиторий уже является готовым индексом: в корне лежит `index.json`, он ссылается
+на пакет в `dist/` по `https://raw.githubusercontent.com/...`, а sha256 проверяется
+в CI. Панель умеет ставить плагины прямо оттуда — ничего hosted-ить не нужно.
+
+1. **Admin → Extensions → Marketplace → Marketplaces → Add**:
+   - **URL**: `https://raw.githubusercontent.com/kafder100/RustWipe/main/index.json`
+   - **Label**: `RustWipe`
+2. Вкладка **Marketplace** → **Rust AutoWipe** → **Install**.
+   Панель скачает `.catpkg.zip`, сверит sha256 с индексом и распакует код
+   **выключенным** (ничего не исполняется до дисклеймера).
+3. **Admin → Extensions → Plugins → Rust AutoWipe → Enable** → принять дисклеймер.
+4. **Settings** → `apiKey` (§5.1).
+
+Что важно знать:
+
+- панель кэширует индекс **5 минут**; после публикации новой версии нажмите
+  обновление в маркетплейсе — появится **Update**, когда версия в `index.json`
+  станет выше установленной;
+- при скачивании панель требует **HTTPS** и публичный хост: `raw.githubusercontent.com`
+  подходит, локальные/приватные адреса отклоняются (`FORBIDDEN_HOST`);
+- sha256 обязателен: без него запись считается «не опубликованной»
+  (`CHECKSUM_REQUIRED`), а при расхождении установка прерывается
+  (`CHECKSUM_MISMATCH`).
+
+Пересобрать индекс под другой хостинг (свой CDN, GitHub Releases):
 
 ```bash
+# пакет + индекс в корне репозитория
 python tools/pack.py --base-url https://cdn.example.com/plugins
+
+# вариант с GitHub Releases: приложить zip к релизу v1.0.0
+python tools/pack.py --base-url https://github.com/kafder100/RustWipe/releases/download/v1.0.0
 ```
 
-Выложите `index.json` и zip на HTTPS, затем **Admin → Extensions → Marketplace →
-Marketplaces → Add** (или переменная `PLUGIN_MARKETPLACE_URLS`). Плагин появится в списке,
-дальше **Install → Enable**.
+`pack.py` сам проверяет результат через `tools/check_index.py` и печатает URL
+индекса для панели.
+
+### 4.3a. Как выпустить обновление
+
+```bash
+# 1) поднять version в rust-autowipe/plugin.json (например 1.0.1)
+# 2) пересобрать пакет и индекс
+python tools/pack.py
+# 3) закоммитить и запушить
+git add -A && git commit -m "release: rust-autowipe 1.0.1" && git push
+```
+
+`pack.py` упадёт, если sha256 в индексе не совпадёт с архивом, версия разойдётся
+с `plugin.json` или в zip попадёт запрещённая запись. Тот же `check_index.py`
+крутится в CI на каждый push, поэтому сломанная версия не доедет до панели.
 
 ### 4.4. Полезные API-вызовы
 
@@ -359,6 +403,19 @@ CSS инжектится один раз (`<style id="rust-autowipe-styles">`), 
 | Плагин не найден после копирования | каталог должен называться `rust-autowipe`, внутри — `plugin.json`; `docker compose logs backend \| grep -i plugin` |
 | Ошибка `catalystVersion` | в манифесте `>=1.80.0`; обновите панель или поправьте поле |
 
+Маркетплейс:
+
+| Симптом | Что проверить |
+|---|---|
+| Плагина нет в Marketplace | в **Marketplaces** источник добавлен и включён; URL открывается в браузере и отдаёт JSON; подождите 5 минут кэша и нажмите обновление |
+| `HTTP 404` при чтении индекса | `index.json` закоммичен в `main`; откройте `https://raw.githubusercontent.com/kafder100/RustWipe/main/index.json` |
+| «Not published» / нельзя нажать Install | у записи в `index.json` нет `sha256` — пересоберите `python tools/pack.py` |
+| `CHECKSUM_REQUIRED` | установка через API без sha256: возьмите дайджест из `index.json` |
+| `CHECKSUM_MISMATCH` | архив и индекс разъехались: `python tools/check_index.py`, затем пересобрать и запушить |
+| `FORBIDDEN_HOST` / `INSECURE_PROTOCOL` | `downloadUrl` должен быть `https://` и публичным (raw.githubusercontent.com подходит) |
+| Установилась старая версия | кэш индекса 5 минут + обновите список; проверьте `version` в `index.json` |
+| `UNSAFE_ENTRY` / `BLOCKED` при распаковке | в zip попал файл вне allowlist (`src/`, `dist/`, `node_modules/`) — пересоберите `pack.py` |
+
 Логи: `docker compose -f /opt/catalyst/catalyst-docker/docker-compose.yml logs -f backend`.
 
 ---
@@ -372,8 +429,11 @@ node tools/test.mjs
 # дымовой тест UI (DOM-шим + мок fetch)
 node tools/ui-smoke.mjs
 
-# пересобрать пакет
-python tools/pack.py --base-url https://cdn.example.com/plugins
+# пересобрать пакет и индекс (base-url уже указывает на этот репозиторий)
+python tools/pack.py
+
+# только проверка: схема plugin.json, index.json, sha256, состав zip
+python tools/check_index.py
 ```
 
 Итерации на живой панели:

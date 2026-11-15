@@ -29,8 +29,7 @@ backend — обычный ESM без зависимостей (роуты, `sch
    docker compose -f /opt/catalyst/catalyst-docker/docker-compose.yml restart backend
    ```
 
-   Либо установить `dist/rust-autowipe-1.0.0.catpkg.zip` через маркетплейс
-   (см. [руководство](docs/RUST-AUTOWIPE-RU.md#4-установка)).
+   Либо установить через маркетплейс панели — см. раздел ниже.
 
 2. **Admin → Extensions → Plugins → Rust AutoWipe → Enable** (принять дисклеймер).
 
@@ -42,6 +41,41 @@ backend — обычный ESM без зависимостей (роуты, `sch
 
 Подробно: [docs/RUST-AUTOWIPE-RU.md](docs/RUST-AUTOWIPE-RU.md).
 
+## Подключение к маркетплейсу Catalyst
+
+Репозиторий сам служит индексом маркетплейса: `index.json` в корне ссылается на
+пакет в `dist/`, а sha256 сверяется в CI, поэтому панель не получит «битую» версию.
+
+1. **Admin → Extensions → Marketplace → Marketplaces → Add**:
+   - **URL**: `https://raw.githubusercontent.com/kafder100/RustWipe/main/index.json`
+   - **Label**: `RustWipe`
+2. Вкладка **Marketplace** → найти **Rust AutoWipe** → **Install**
+   (панель скачает zip, сверит sha256 и положит код на диск выключенным).
+3. **Admin → Extensions → Plugins → Rust AutoWipe → Enable** → принять дисклеймер.
+4. **Settings** → `apiKey` (см. выше).
+
+Панель кэширует индекс 5 минут: после публикации новой версии нажмите в маркетплейсе
+«обновить»; кнопка **Update** появится, когда версия в `index.json` станет выше
+установленной.
+
+### Как выпустить новую версию
+
+```bash
+# 1. поднять version в rust-autowipe/plugin.json
+# 2. пересобрать пакет и индекс (base-url уже указывает на этот репозиторий)
+python tools/pack.py
+# 3. закоммитить dist/, index.json и plugin.json
+git add -A && git commit -m "release: rust-autowipe x.y.z"
+git push
+```
+
+`pack.py` в конце запускает `check_index.py` и падает, если sha256, версия или состав
+архива разошлись. В CI тот же `check_index.py` выполняется на каждый push.
+
+Если хочется вместо raw-ссылки использовать GitHub Releases, соберите пакет с
+`--base-url https://github.com/kafder100/RustWipe/releases/download/v<версия>` и
+приложите zip к релизу — остальное (sha256, индекс) не меняется.
+
 ## Структура репозитория
 
 ```
@@ -50,11 +84,14 @@ rust-autowipe/            каталог плагина (имя = name в plugin
   backend/                роуты, планировщик, fileTunnel, оркестрация вайпа
   frontend/frontend.mjs   self-contained UI (без React-хуков и импортов)
 docs/RUST-AUTOWIPE-RU.md  полное руководство (установка, настройка, диагностика)
+index.json                индекс маркетплейса (его URL добавляют в панель)
 tools/test.mjs            тесты backend-логики (23 проверки)
 tools/ui-smoke.mjs        дымовой тест UI на DOM-шиме
 tools/pack.py             сборка .catpkg.zip + sha256 + index.json
+tools/check_index.py      проверка индекса, пакета и схемы plugin.json (он же в CI)
+tools/catalyst_manifest.py  повтор zod-схемы манифеста Catalyst
 tools/push_to_github.mjs  публикация репозитория через GitHub REST API
-dist/                     собранный пакет и индекс маркетплейса
+dist/                     собранный пакет .catpkg.zip и .sha256
 ```
 
 ## Разработка
@@ -62,7 +99,8 @@ dist/                     собранный пакет и индекс марк
 ```bash
 node tools/test.mjs                 # логика: расписание, маски, прогон вайпа
 node tools/ui-smoke.mjs             # рендер UI без браузера
-python tools/pack.py --base-url https://cdn.example.com/plugins
+python tools/pack.py                # пересобрать пакет + индекс + проверка
+python tools/check_index.py         # только проверка индекса/пакета/манифеста
 ```
 
 Проверка кода в панели:

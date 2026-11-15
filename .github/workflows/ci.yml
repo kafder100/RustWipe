@@ -21,17 +21,7 @@ jobs:
       - name: Frontend smoke test
         run: node tools/ui-smoke.mjs
 
-      - name: Validate plugin manifest
-        run: |
-          python3 - <<'PY'
-          import json
-          from pathlib import Path
-
-          manifest = json.loads(Path('rust-autowipe/plugin.json').read_text(encoding='utf-8'))
-          assert manifest['name'] == 'rust-autowipe', manifest['name']
-          assert manifest['backend']['entry'] == 'backend/index.js'
-          assert manifest['frontend']['entry'] == 'frontend/frontend.mjs'
-          assert Path('rust-autowipe', manifest['backend']['entry']).is_file()
-          assert Path('rust-autowipe', manifest['frontend']['entry']).is_file()
-          print('manifest ok:', manifest['name'], manifest['version'])
-          PY
+      # Проверяет схему plugin.json, index.json, sha256 пакета и состав zip:
+      # именно эти данные читает маркетплейс Catalyst при установке.
+      - name: Validate marketplace index and package
+        run: python3 tools/check_index.py

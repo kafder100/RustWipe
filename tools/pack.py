@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Сборка .catpkg.zip для панели Catalyst + проверка состава.
+"""Сборка .catpkg.zip для панели Catalyst + индекс маркетплейса.
 
 Использование:
     python tools/pack.py
-    python tools/pack.py --base-url https://cdn.example.com/plugins
+    python tools/pack.py --base-url https://raw.githubusercontent.com/user/RustWipe/main/dist
 
-Пишет в dist/:
-    <name>-<version>.catpkg.zip
-    <name>-<version>.catpkg.zip.sha256
-    index.json
+Пишет:
+    dist/<name>-<version>.catpkg.zip
+    dist/<name>-<version>.catpkg.zip.sha256
+    index.json                      (корень репозитория — его и добавляют в панель)
+
+После сборки запускает tools/check_index.py, чтобы индекс и пакет не разъехались.
 """
 
 from __future__ import annotations
@@ -16,13 +18,22 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+from catalyst_manifest import validate_manifest  # noqa: E402
+
 ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_DIR = ROOT / "rust-autowipe"
 DIST_DIR = ROOT / "dist"
+INDEX_PATH = ROOT / "index.json"
+
+DEFAULT_BASE_URL = "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist"
+DEFAULT_INDEX_URL = "https://raw.githubusercontent.com/kafder100/RustWipe/main/index.json"
 
 ALLOWED_TOP_LEVEL = {"plugin.json", "README.md", "LICENSE", "backend", "frontend", "assets"}
 FORBIDDEN_NAMES = {".DS_Store", "Thumbs.db"}
@@ -46,10 +57,8 @@ def load_manifest() -> dict:
 
 def collect_files() -> list[Path]:
     manifest = PLUGIN_DIR / "plugin.json"
-    if not manifest.is_file():
-        fail("plugin.json отсутствует")
-
     files: list[Path] = [manifest]
+
     readme = PLUGIN_DIR / "README.md"
     if readme.is_file():
         files.append(readme)
@@ -95,21 +104,37 @@ def verify_entries(entries: list[str], manifest: dict) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Собрать .catpkg.zip для Catalyst")
+    parser = argparse.ArgumentParser(description="Собрать .catpkg.zip и индекс Catalyst")
     parser.add_argument(
         "--base-url",
-        default="https://example.com/plugins",
-        help="базовый URL, где будет лежать архив (для index.json)",
+        default=DEFAULT_BASE_URL,
+        help="каталог, в котором будет лежать архив (для downloadUrl в index.json)",
     )
+    parser.add_argument(
+        "--index-url",
+        default=DEFAULT_INDEX_URL,
+        help="публичный URL index.json — печатается как адрес для панели",
+    )
+    parser.add_argument("--skip-check", action="store_true", help="не запускать check_index.py")
     args = parser.parse_args()
 
     manifest = load_manifest()
+    manifest_errors = validate_manifest(manifest)
+    if manifest_errors:
+        fail("plugin.json не проходит схему Catalyst:\n  - " + "\n  - ".join(manifest_errors))
+
     name = manifest["name"]
     version = manifest["version"]
 
     files = collect_files()
     entries = sorted({path.relative_to(PLUGIN_DIR).as_posix() for path in files})
     verify_entries(entries, manifest)
+
+    base = args.base_url.rstrip("/")
+    if not base.startswith("https://"):
+        # Панель отказывает в установке по plaintext http для всех, кроме
+        # доверенных локальных хостов, — предупреждаем сразу.
+        print(f"ВНИМАНИЕ: base-url не https ({base}) — панель не установит такой пакет", file=sys.stderr)
 
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     zip_path = DIST_DIR / f"{name}-{version}.catpkg.zip"
@@ -120,9 +145,9 @@ def main() -> None:
 
     digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
     sha_path = DIST_DIR / f"{name}-{version}.catpkg.zip.sha256"
-    sha_path.write_text(f"{digest}  {zip_path.name}\n", encoding="utf-8")
+    # newline="\n" — чтобы файлы в репозитории не зависели от ОС сборки.
+    sha_path.write_text(f"{digest}  {zip_path.name}\n", encoding="utf-8", newline="\n")
 
-    base = args.base_url.rstrip("/")
     index = {
         "schemaVersion": 1,
         "plugins": [
@@ -138,15 +163,34 @@ def main() -> None:
             }
         ],
     }
-    index_path = DIST_DIR / "index.json"
-    index_path.write_text(json.dumps(index, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    INDEX_PATH.write_text(
+        json.dumps(index, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
 
-    print(f"Пакет:   {zip_path} ({zip_path.stat().st_size} байт)")
+    legacy_index = DIST_DIR / "index.json"
+    if legacy_index.is_file():
+        legacy_index.unlink()
+        print(f"Удалён устаревший {legacy_index.relative_to(ROOT)} (индекс теперь в корне)")
+
+    print(f"Пакет:   {zip_path.relative_to(ROOT)} ({zip_path.stat().st_size} байт)")
     print(f"sha256:  {digest}")
-    print(f"Индекс:  {index_path}")
+    print(f"Индекс:  {INDEX_PATH.relative_to(ROOT)}")
+    print(f"URL для панели (Marketplaces → Add): {args.index_url}")
     print("Состав:")
     for entry in entries:
         print(f"  - {entry}")
+
+    if not args.skip_check:
+        print("")
+        result = subprocess.run(
+            [sys.executable, str(ROOT / "tools" / "check_index.py")],
+            cwd=ROOT,
+            check=False,
+        )
+        if result.returncode != 0:
+            raise SystemExit(result.returncode)
 
 
 if __name__ == "__main__":

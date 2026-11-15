@@ -19,8 +19,10 @@
 (и `console.write`, если используете команды после запуска).
 
 Скопируйте каталог `rust-autowipe` в `/var/lib/catalyst/plugins/` контейнера
-`catalyst-backend` и перезапустите backend **или** установите `.catpkg.zip`
-через маркетплейс. Затем **Admin → Extensions → Plugins → Enable**.
+`catalyst-backend` и перезапустите backend **или** установите через маркетплейс:
+**Admin → Extensions → Marketplace → Marketplaces → Add**
+`https://raw.githubusercontent.com/kafder100/RustWipe/main/index.json`,
+затем **Install**. После установки — **Admin → Extensions → Plugins → Enable**.
 
 Настройки плагина: **Admin → Extensions → Plugins → Rust AutoWipe → Settings**.
 Обязательные поля: `apiKey`. `panelUrl` можно не заполнять — по умолчанию
