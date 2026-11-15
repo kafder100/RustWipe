@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.1.1 — 2026-11-15
+
+- Убрано неиспользуемое право `rust-autowipe.view`: доступ к вкладке определяется
+  встроенным `server.read` на сервере, а изменения и запуск — `rust-autowipe.manage`
+  и `rust-autowipe.run`.
+- Уточнены README и руководство по привязке к серверу/яйцу.
+
 ## 1.1.0 — 2026-11-15
 
 - Плагин стал **серверной вкладкой**: `location: 'server'` + `templateFilter: { namePattern: 'rust' }`.

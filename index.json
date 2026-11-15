@@ -6,9 +6,9 @@
       "displayName": "Rust AutoWipe",
       "description": "Автовайпы Rust для конкретного сервера: вкладка появляется у серверов с шаблоном Rust, расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов, остановка и запуск сервера, история запусков.",
       "author": "H1NZON",
-      "version": "1.1.0",
-      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.1.0.catpkg.zip",
-      "sha256": "59ab747f900525cdb99f4039bea9f245384b5f00b3a5343849fcbbb77f649c50",
+      "version": "1.1.1",
+      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.1.1.catpkg.zip",
+      "sha256": "5ffe2574dfff85e968bbb620e5a8031b12eae232b701708eed541e62d2bbacf7",
       "tags": [
         "rust",
         "wipe",

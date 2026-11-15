@@ -25,7 +25,6 @@ import { buildProfile, publicProfile } from './lib/store.js';
 import { serverClock } from './lib/time.js';
 import { executeProfileRun } from './lib/wipe.js';
 
-const VIEW = 'rust-autowipe.view';
 const MANAGE = 'rust-autowipe.manage';
 const RUN = 'rust-autowipe.run';
 
@@ -239,7 +238,6 @@ function registerRoutes(ctx) {
           permissions: {
             canManage: hasPerm(ctx, request, MANAGE),
             canRun: hasPerm(ctx, request, RUN),
-            canView: hasPerm(ctx, request, VIEW),
           },
         },
       };

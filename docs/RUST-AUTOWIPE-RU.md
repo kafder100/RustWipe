@@ -5,7 +5,7 @@
 
 Проверено по документации Catalyst (релиз **v1.89.0**, ноябрь 2026) и исходникам
 `catalystctl/catalyst`. В комплекте: исходники плагина, собранный пакет
-`dist/rust-autowipe-1.1.0.catpkg.zip`, индекс маркетплейса и тесты.
+`dist/rust-autowipe-1.1.1.catpkg.zip`, индекс маркетплейса и тесты.
 
 ---
 
@@ -167,8 +167,8 @@ tools/
 .github/workflows/ci.yml           CI: тесты + проверка индекса и пакета
 
 dist/
-  rust-autowipe-1.1.0.catpkg.zip
-  rust-autowipe-1.1.0.catpkg.zip.sha256
+  rust-autowipe-1.1.1.catpkg.zip
+  rust-autowipe-1.1.1.catpkg.zip.sha256
 ```
 
 Размер пакета — ~38 КБ, зависимостей нет: backend — чистый ESM на `node:*` и `fetch`,
@@ -203,12 +203,12 @@ docker compose -f /opt/catalyst/catalyst-docker/docker-compose.yml restart backe
 Нужен HTTPS-хостинг для архива (GitHub Release, ваш CDN, nginx на том же сервере).
 
 ```bash
-SHA=$(cut -d' ' -f1 dist/rust-autowipe-1.1.0.catpkg.zip.sha256)
+SHA=$(cut -d' ' -f1 dist/rust-autowipe-1.1.1.catpkg.zip.sha256)
 
 curl -X POST https://panel.example.com/api/plugins/install \
   -H "Authorization: Bearer $CATALYST_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d "{\"url\":\"https://cdn.example.com/rust-autowipe-1.1.0.catpkg.zip\",\"sha256\":\"$SHA\"}"
+  -d "{\"url\":\"https://cdn.example.com/rust-autowipe-1.1.1.catpkg.zip\",\"sha256\":\"$SHA\"}"
 ```
 
 `sha256` обязателен: панель проверяет дайджест до распаковки, без него — `CHECKSUM_REQUIRED`.
@@ -236,7 +236,7 @@ curl -X POST https://panel.example.com/api/plugins/install \
 - `raw.githubusercontent.com` кэширует файлы ещё примерно на 5 минут (заголовок
   `no-cache` этот кэш не пробивает). Сразу после `git push` панель может видеть
   прошлую версию — подождите несколько минут. Пакет новой версии лежит по новому
-  URL (`…-1.1.0.catpkg.zip`), кэша у него нет, поэтому после обновления индекса
+  URL (`…-1.1.1.catpkg.zip`), кэша у него нет, поэтому после обновления индекса
   он скачивается сразу;
 - при скачивании панель требует **HTTPS** и публичный хост: `raw.githubusercontent.com`
   подходит, локальные/приватные адреса отклоняются (`FORBIDDEN_HOST`);
@@ -318,9 +318,11 @@ curl -X POST https://panel.example.com/api/plugins/rust-autowipe/reload \
 
 Плагин объявляет роли (появятся в **Admin → Access Control → Roles → Plugins**):
 
-- `rust-autowipe.view` — видеть вкладку и расписание (владелец сервера видит их и без этой роли);
 - `rust-autowipe.manage` — создавать/менять/удалять профили (включая списки путей!);
 - `rust-autowipe.run` — кнопка «Запустить сейчас».
+
+Сам доступ к вкладке определяется встроенным `server.read` на этом сервере: владелец
+и субпользователь с доступом видят вкладку, а роли выше разрешают изменения и запуск.
 
 Доступ к самому серверу проверяется отдельно: владелец сервера и админ панели проходят
 всегда, субпользователь — если панель подтверждает его доступ к этому серверу.
