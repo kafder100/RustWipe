@@ -274,9 +274,11 @@ function ensureStyles() {
 .rw-path-btn.danger:hover{color:var(--rw-danger)}
 /* Раскладка строки пути: жёсткая сетка «ручка · номер · путь · кнопки».
    !important — чтобы перебить прежние flex-правила и стили хоста. */
-.rw-path{display:grid !important;grid-template-columns:0.85rem 1.3rem minmax(0,1fr) auto !important;
+.rw-path{display:grid !important;grid-template-columns:max-content minmax(0,1fr) auto !important;
   align-items:center !important;gap:6px !important;padding:2px 6px !important;position:relative}
-.rw-path.editing{grid-template-columns:0.85rem 1.3rem minmax(0,1fr) !important}
+.rw-path.editing{grid-template-columns:max-content minmax(0,1fr) !important}
+.rw-path-main{display:flex !important;align-items:baseline !important;gap:5px !important;min-width:0}
+.rw-path-main .rw-path-text{flex:1 !important}
 .rw-path-grip{color:var(--rw-muted) !important;cursor:grab;user-select:none;text-align:center;
   font-size:12px;line-height:1;flex:none}
 .rw-path-grip:active{cursor:grabbing}
@@ -1532,8 +1534,12 @@ class App {
               },
             },
             grip,
-            el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
-            el('span', { class: 'rw-path-text', title: path, text: path }),
+            el(
+              'div',
+              { class: 'rw-path-main' },
+              el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
+              el('span', { class: 'rw-path-text', title: path, text: path }),
+            ),
             el(
               'div',
               { class: 'rw-path-actions' },
@@ -2160,7 +2166,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.3.6',
+  version: '1.3.7',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
