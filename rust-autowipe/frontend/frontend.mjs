@@ -258,12 +258,20 @@ function ensureStyles() {
 .rw-checks{display:flex;flex-direction:column;gap:6px}
 .rw-check{display:flex;align-items:center;gap:8px;font-size:12.5px}
 .rw-check input{width:15px;height:15px;accent-color:var(--rw-accent)}
-.rw-paths{display:flex;flex-direction:column;gap:6px;max-height:190px;overflow:auto;border:1px solid var(--rw-border);
-  border-radius:8px;padding:6px;background:rgba(148,163,184,.05)}
-.rw-path{display:flex;align-items:center;gap:8px;padding:3px 6px;border-radius:6px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px}
+.rw-paths{display:flex;flex-direction:column;gap:2px;max-height:230px;overflow:auto;border:1px solid var(--rw-border);
+  border-radius:8px;padding:4px;background:rgba(148,163,184,.05)}
+.rw-path{display:flex;align-items:center;gap:6px;padding:2px 4px;border-radius:6px;font-size:12px}
 .rw-path:hover{background:var(--rw-panel2)}
-.rw-path span{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.rw-path button{border:none;background:transparent;color:var(--rw-danger);cursor:pointer;font-size:14px;line-height:1;padding:2px 4px}
+.rw-path.editing{background:var(--rw-panel2)}
+.rw-path-n{color:var(--rw-muted);font-variant-numeric:tabular-nums;min-width:1.7rem;flex:none}
+.rw-path-text{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.rw-path input{flex:1;min-width:0;padding:3px 7px;font-size:12px}
+.rw-path-btn{border:none;background:transparent;color:var(--rw-muted);cursor:pointer;font-size:13px;line-height:1;
+  padding:2px 5px;border-radius:4px;flex:none}
+.rw-path-btn:hover:not(:disabled){background:var(--rw-border);color:var(--rw-fg,#e5e9f0)}
+.rw-path-btn:disabled{opacity:.3;cursor:default}
+.rw-path-btn.danger:hover{color:var(--rw-danger)}
 .rw-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .rw-modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
 .rw-notice{border:1px solid var(--rw-border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--rw-muted)}
@@ -434,6 +442,7 @@ class App {
       presets: [],
       modal: null,
       picker: null,
+      pathEdit: null,
       preview: null,
       toast: null,
       busy: false,
@@ -542,6 +551,16 @@ class App {
         : null,
       this.renderModal(),
     ]);
+
+    // Инлайн-правка пути: после перерисовки возвращаем фокус в поле.
+    const editInput = this.root.querySelector('[data-rw-path-edit]');
+    if (editInput) {
+      editInput.focus();
+      if (typeof editInput.setSelectionRange === 'function') {
+        const end = editInput.value.length;
+        editInput.setSelectionRange(end, end);
+      }
+    }
   }
 
   renderHeader() {
@@ -887,6 +906,7 @@ class App {
   closeModal() {
     this.state.modal = null;
     this.state.preview = null;
+    this.state.pathEdit = null;
     this.render();
   }
 
@@ -894,7 +914,65 @@ class App {
   backToEditor() {
     const picker = this.state.modal;
     if (!picker || picker.type !== 'picker') return;
+    this.state.pathEdit = null;
     this.state.modal = { type: 'editor', draft: picker.draft };
+    this.render();
+  }
+
+  /** Список путей: перемещение, дублирование, правка и удаление строк. */
+  movePathItem(kind, index, delta) {
+    const draft = this.draft();
+    const list = draft && draft[kind];
+    const next = index + delta;
+    if (!Array.isArray(list) || next < 0 || next >= list.length) return;
+    const [item] = list.splice(index, 1);
+    list.splice(next, 0, item);
+    this.state.pathEdit = null;
+    this.render();
+  }
+
+  duplicatePathItem(kind, index) {
+    const draft = this.draft();
+    const list = draft && draft[kind];
+    if (!Array.isArray(list) || list[index] === undefined) return;
+    list.splice(index + 1, 0, list[index]);
+    this.state.pathEdit = null;
+    this.render();
+  }
+
+  removePathItem(kind, index) {
+    const draft = this.draft();
+    const list = draft && draft[kind];
+    if (!Array.isArray(list)) return;
+    list.splice(index, 1);
+    this.state.pathEdit = null;
+    this.render();
+  }
+
+  startPathEdit(kind, index) {
+    this.state.pathEdit = { kind, index };
+    this.render();
+  }
+
+  commitPathEdit(value) {
+    const edit = this.state.pathEdit;
+    if (!edit) return;
+    const draft = this.draft();
+    const list = draft && draft[edit.kind];
+    const next = String(value == null ? '' : value).trim();
+    this.state.pathEdit = null;
+    if (Array.isArray(list) && next && list[edit.index] !== undefined) {
+      list[edit.index] = next;
+      // Одинаковые пути в списке бессмысленны — схлопываем, сохраняя порядок.
+      const unique = list.filter((item, position) => list.indexOf(item) === position);
+      if (unique.length !== list.length) list.splice(0, list.length, ...unique);
+    }
+    this.render();
+  }
+
+  cancelPathEdit() {
+    if (!this.state.pathEdit) return;
+    this.state.pathEdit = null;
     this.render();
   }
 
@@ -953,6 +1031,7 @@ class App {
       : blankDraft(this.serverId);
     if (!draft.name) draft.name = '';
     draft.serverId = this.serverId;
+    this.state.pathEdit = null;
     this.state.modal = { type: 'editor', draft };
     this.render();
   }
@@ -1304,31 +1383,97 @@ class App {
       ),
     );
 
-    const pathList = (list, kind) =>
-      el(
+    const pathList = (list, kind) => {
+      const edit = this.state.pathEdit;
+      if (!list.length) {
+        return el(
+          'div',
+          { class: 'rw-paths' },
+          el('div', { class: 'rw-dim', style: { padding: '4px 6px' } }, 'Список пуст'),
+        );
+      }
+      return el(
         'div',
         { class: 'rw-paths' },
-        ...(list.length
-          ? list.map((path, index) =>
-              el(
-                'div',
-                { class: 'rw-path' },
-                el('span', { title: path }, path),
-                el(
-                  'button',
-                  {
-                    title: 'Убрать',
-                    onclick: () => {
-                      list.splice(index, 1);
-                      this.render();
-                    },
-                  },
-                  '×',
-                ),
-              ),
-            )
-          : [el('div', { class: 'rw-dim', style: { padding: '4px 6px' } }, 'Список пуст')]),
+        ...list.map((path, index) => {
+          if (edit && edit.kind === kind && edit.index === index) {
+            return el(
+              'div',
+              { class: 'rw-path editing' },
+              el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
+              el('input', {
+                type: 'text',
+                value: path,
+                'data-rw-path-edit': '1',
+                onkeydown: (event) => {
+                  if (event.key === 'Enter') {
+                    event.preventDefault();
+                    this.commitPathEdit(event.target.value);
+                  } else if (event.key === 'Escape') {
+                    event.preventDefault();
+                    this.cancelPathEdit();
+                  }
+                },
+                onblur: (event) => this.commitPathEdit(event.target.value),
+              }),
+            );
+          }
+          return el(
+            'div',
+            { class: 'rw-path' },
+            el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
+            el('span', { class: 'rw-path-text', title: path, text: path }),
+            el(
+              'button',
+              {
+                class: 'rw-path-btn',
+                title: 'Переместить выше',
+                disabled: index === 0 ? '' : null,
+                onclick: () => this.movePathItem(kind, index, -1),
+              },
+              '↑',
+            ),
+            el(
+              'button',
+              {
+                class: 'rw-path-btn',
+                title: 'Переместить ниже',
+                disabled: index === list.length - 1 ? '' : null,
+                onclick: () => this.movePathItem(kind, index, 1),
+              },
+              '↓',
+            ),
+            el(
+              'button',
+              {
+                class: 'rw-path-btn',
+                title: 'Изменить путь',
+                onclick: () => this.startPathEdit(kind, index),
+              },
+              '✎',
+            ),
+            el(
+              'button',
+              {
+                class: 'rw-path-btn',
+                title: 'Дублировать',
+                onclick: () => this.duplicatePathItem(kind, index),
+              },
+              '⧉',
+            ),
+            el(
+              'button',
+              {
+                class: 'rw-path-btn danger',
+                title: 'Убрать из списка',
+                onclick: () => this.removePathItem(kind, index),
+              },
+              '×',
+            ),
+          );
+        }),
       );
+    };
 
     const presetButtons = this.state.presets.map((preset) =>
       el(
@@ -1935,7 +2080,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.3.3',
+  version: '1.3.4',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
