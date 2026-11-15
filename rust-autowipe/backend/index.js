@@ -25,7 +25,7 @@ import { describeSchedule, nextOccurrence, normalizeSchedule } from './lib/sched
 import { buildProfile, publicProfile } from './lib/store.js';
 import { serverClock } from './lib/time.js';
 import { executeProfileRun } from './lib/wipe.js';
-import { sendWipeWarnings, formatWarning } from './lib/warnings.js';
+import { sendWipeWarnings, formatWarning, getWarningState, loadWarningState } from './lib/warnings.js';
 
 const MANAGE = 'rust-autowipe.manage';
 const RUN = 'rust-autowipe.run';
@@ -269,6 +269,7 @@ function registerRoutes(ctx) {
             enabled: ctx.getConfig('wipeWarningEnabled') !== false,
             minutes: Number(ctx.getConfig('wipeWarningMinutes') ?? 5),
             text: String(ctx.getConfig('wipeWarningText') ?? 'Вайп сервера через {minutes} мин'),
+            state: getWarningState(),
           },
           running: [...runningProfiles],
           profilesCount: profiles,
@@ -626,6 +627,7 @@ const plugin = {
       ctx.logger.warn('rust-autowipe: планировщик выключен в настройках плагина');
       return;
     }
+    await loadWarningState(ctx);
     ctx.scheduleTask('* * * * *', () => runTick(ctx));
     ctx.logger.info('rust-autowipe: планировщик активен (проверка раз в минуту)');
     // Догоняем пропущенное сразу после включения/старта панели.

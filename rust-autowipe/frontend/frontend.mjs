@@ -324,7 +324,7 @@ function ensureStyles() {
 .rw-steps{display:flex;flex-direction:column;gap:1px;font-size:12px;margin-top:6px}
 .rw-step{border-radius:5px}
 .rw-step[open]{background:rgba(148,163,184,.06)}
-.rw-step>summary{cursor:pointer;display:grid;grid-template-columns:1.7rem 6.6rem max-content max-content;gap:10px;align-items:baseline;list-style:none;padding:3px 8px;border-radius:5px}
+.rw-step>summary{cursor:pointer;display:grid;grid-template-columns:1.7rem 6.6rem 1rem max-content 1fr;gap:8px;align-items:baseline;list-style:none;padding:3px 8px;border-radius:5px}
 .rw-step>summary::-webkit-details-marker{display:none}
 .rw-step>summary:hover{background:var(--rw-panel2)}
 .rw-step-n{color:var(--rw-muted);font-variant-numeric:tabular-nums}
@@ -332,6 +332,17 @@ function ensureStyles() {
 .rw-step-label{font-weight:600}
 .rw-step-label.bad{color:var(--rw-danger)}
 .rw-step-ms{color:var(--rw-muted);font-variant-numeric:tabular-nums;justify-self:end}
+/* Явные цвета шагов: панель красит контейнер в акцент, и без этого весь
+   список шагов становился оранжевым. */
+.rw-steps,.rw-step>summary{color:#e5e9f0}
+.rw-step-n,.rw-step-clock,.rw-step-ms{color:#8b98a9 !important}
+.rw-step-ok{color:#22c55e !important;font-weight:700}
+.rw-step-bad{color:#ef4444 !important;font-weight:700}
+.rw-step-label{color:#e5e9f0 !important}
+.rw-step-label.bad{color:#ef4444 !important}
+.rw-step-detail{color:#dfe6ef !important}
+.rw-kv-key{color:#8b98a9 !important}
+.rw-kv-val{color:#e5e9f0 !important}
 .rw-step-body{display:flex;flex-direction:column;gap:7px;padding:2px 8px 9px 2.8rem}
 .rw-step-detail{font-size:12px;line-height:1.45;word-break:break-word}
 .rw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 14px;font-size:12px;align-items:baseline}
@@ -611,6 +622,30 @@ class App {
     if (status.dryRun) {
       chips.push(el('span', { class: 'rw-chip warn' }, 'Глобальный dry-run'));
     }
+    const warnState = status.wipeWarning && status.wipeWarning.state;
+    if (warnState && warnState.ok === false) {
+      chips.push(
+        el(
+          'span',
+          {
+            class: 'rw-chip bad',
+            title: `${warnState.error || 'ошибка'}${warnState.at ? ` · ${warnState.at}` : ''}`,
+          },
+          'чат: ошибка предупреждения',
+        ),
+      );
+    } else if (warnState && warnState.ok === true) {
+      chips.push(
+        el(
+          'span',
+          {
+            class: 'rw-chip ok',
+            title: `${warnState.text || ''}${warnState.at ? ` · ${warnState.at}` : ''}`,
+          },
+          'чат: ок',
+        ),
+      );
+    }
     if (status.schedulerEnabled === false) {
       chips.push(el('span', { class: 'rw-chip warn' }, 'Планировщик выключен'));
     }
@@ -823,7 +858,8 @@ class App {
     const head = [
       el('span', { class: 'rw-step-n', text: pad2(index + 1) }),
       el('span', { class: 'rw-step-clock', text: fmtClock(step.at, offset) }),
-      el('span', { class: ok ? 'rw-step-label' : 'rw-step-label bad' }, `${ok ? '✓' : '✕'} ${label}`),
+      el('span', { class: ok ? 'rw-step-ok' : 'rw-step-bad', text: ok ? '✓' : '✕' }),
+      el('span', { class: ok ? 'rw-step-label' : 'rw-step-label bad' }, label),
       ms !== null ? el('span', { class: 'rw-step-ms', text: fmtDuration(ms) }) : null,
     ];
 
@@ -2208,7 +2244,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.4.2',
+  version: '1.4.3',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',

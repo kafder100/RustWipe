@@ -18,6 +18,33 @@ const cssEnd = source.indexOf('`;', cssStart);
 if (cssEnd < 0) throw new Error('не нашёл конец блока стилей');
 const css = source.slice(cssStart, cssEnd);
 
+const stepRows = [
+  ['01', '23:50:00.009', '✓', 'сервер', '2 мс', true],
+  ['02', '23:50:01.054', '✓', 'остановка', '1.04 с', true],
+  ['03', '23:50:02.224', '✓', 'удаление', '720 мс', true],
+  ['04', '23:50:02.431', '✓', 'запуск', '207 мс', true],
+  ['05', '23:50:03.100', '✕', 'ошибка', '44 мс', false],
+]
+  .map(
+    ([n, clock, icon, label, ms, ok]) => `        <details class="rw-step">
+          <summary>
+            <span class="rw-step-n">${n}</span>
+            <span class="rw-step-clock">${clock}</span>
+            <span class="${ok ? 'rw-step-ok' : 'rw-step-bad'}">${icon}</span>
+            <span class="${ok ? 'rw-step-label' : 'rw-step-label bad'}">${label}</span>
+            <span class="rw-step-ms">${ms}</span>
+          </summary>
+          <div class="rw-step-body">
+            <div class="rw-step-detail">Rust-Test · статус running</div>
+            <div class="rw-kv">
+              <span class="rw-kv-key">статус</span><span class="rw-kv-val">running</span>
+              <span class="rw-kv-key">длительность</span><span class="rw-kv-val">${ms}</span>
+            </div>
+          </div>
+        </details>`,
+  )
+  .join('\n');
+
 const rows = [
   '/server/*/proceduralmap.*.map',
   '/server/*/proceduralmap.*.sav',
@@ -60,6 +87,15 @@ const html = `<!doctype html>
     <div class="rw-root">
       <div class="rw-paths">
 ${rowHtml}
+      </div>
+      <div class="label" style="margin-top:14px">История · шаги</div>
+      <div style="color:#f97316">
+        <details class="rw-details" open>
+          <summary>шаги (5)</summary>
+          <div class="rw-steps">
+${stepRows}
+          </div>
+        </details>
       </div>
     </div>
   </div>

@@ -11,6 +11,33 @@ import { createPanelClient } from './api.js';
 
 const STORE_KEY = 'warnedRuns';
 const MAX_TRACKED_RUNS = 5;
+const STATE_KEY = 'wipeWarningState';
+
+/** Последняя попытка отправки — чтобы показать её в интерфейсе, а не только в логе. */
+let lastState = null;
+
+export function getWarningState() {
+  return lastState;
+}
+
+export async function loadWarningState(ctx) {
+  try {
+    const stored = await ctx.getStorage(STATE_KEY);
+    if (stored && typeof stored === 'object') lastState = stored;
+  } catch {
+    /* хранилище может быть недоступно — не критично */
+  }
+  return lastState;
+}
+
+async function rememberState(ctx, state) {
+  lastState = state;
+  try {
+    await ctx.setStorage(STATE_KEY, state);
+  } catch {
+    /* без сохранения состояние проживёт до перезапуска панели */
+  }
+}
 
 /**
  * Сколько минут осталось до запуска, если мы попали в окно предупреждения.
@@ -81,17 +108,35 @@ export async function sendWipeWarnings(ctx, profiles, now = new Date()) {
     const record = warned.find((item) => item && item.runAt === runAtKey);
     if (Array.isArray(record?.minutes) && record.minutes.includes(minutesLeft)) continue;
 
+    const text = formatWarning(template, minutesLeft);
     try {
-      await api.command(profile.serverId, `say ${formatWarning(template, minutesLeft)}`);
+      await api.command(profile.serverId, `say ${text}`);
     } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
       ctx.logger.warn(
-        { profileId: profile.id, error: error instanceof Error ? error.message : String(error) },
+        { profileId: profile.id, error: reason },
         'rust-autowipe: не удалось отправить предупреждение в чат',
       );
+      await rememberState(ctx, {
+        at: new Date().toISOString(),
+        ok: false,
+        error: reason,
+        profileId: profile.id,
+        serverId: profile.serverId,
+        minutes: minutesLeft,
+      });
       continue;
     }
 
     sent += 1;
+    await rememberState(ctx, {
+      at: new Date().toISOString(),
+      ok: true,
+      text,
+      profileId: profile.id,
+      serverId: profile.serverId,
+      minutes: minutesLeft,
+    });
     await rememberSent(ctx, profile, runAtKey, minutesLeft);
   }
 
