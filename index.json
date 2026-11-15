@@ -6,9 +6,9 @@
       "displayName": "Rust AutoWipe",
       "description": "Автовайпы Rust для конкретного сервера: вкладка у серверов с шаблоном Rust, расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов, ротация сида и размера карты (WORLD_SEED / WORLD_SIZE), остановка и запуск сервера, история запусков.",
       "author": "H1NZON",
-      "version": "1.3.2",
-      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.3.2.catpkg.zip",
-      "sha256": "c0da1c550e3463194d06ecfd892b8c12cdf7300eded656142a3ad611980dda1b",
+      "version": "1.3.3",
+      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.3.3.catpkg.zip",
+      "sha256": "e2cbad21c729d172a32db9f982e2c9d20b0ccaf2faf5a096b26e5a787f67dff0",
       "tags": [
         "rust",
         "wipe",

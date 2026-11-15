@@ -890,6 +890,14 @@ class App {
     this.render();
   }
 
+  /** Вернуться из выбора файлов в редактор, сохранив черновик профиля. */
+  backToEditor() {
+    const picker = this.state.modal;
+    if (!picker || picker.type !== 'picker') return;
+    this.state.modal = { type: 'editor', draft: picker.draft };
+    this.render();
+  }
+
   renderModal() {
     if (this.state.preview) return this.renderPreviewModal();
     if (!this.state.modal) return null;
@@ -1363,12 +1371,7 @@ class App {
 
     return el(
       'div',
-      {
-        class: 'rw-overlay',
-        onclick: (event) => {
-          if (event.target === event.currentTarget) this.closeModal();
-        },
-      },
+      { class: 'rw-overlay' },
       el(
         'div',
         { class: 'rw-modal wide' },
@@ -1642,7 +1645,10 @@ class App {
       {
         class: 'rw-overlay',
         onclick: (event) => {
-          if (event.target === event.currentTarget) this.closeModal();
+          if (event.target === event.currentTarget) {
+            this.state.preview = null;
+            this.render();
+          }
         },
       },
       el(
@@ -1652,7 +1658,17 @@ class App {
           'div',
           { class: 'rw-modal-head' },
           el('h3', null, `Что будет удалено — ${profile.name}`),
-          el('button', { class: 'rw-btn small', onclick: () => this.closeModal() }, 'Закрыть'),
+          el(
+            'button',
+            {
+              class: 'rw-btn small',
+              onclick: () => {
+                this.state.preview = null;
+                this.render();
+              },
+            },
+            'Закрыть',
+          ),
         ),
         el(
           'div',
@@ -1756,6 +1772,36 @@ class App {
       ),
     );
 
+    // «На уровень выше»: путь родителя берём из хлебных крошек, чтобы не
+    // разбирать путь вручную и не выйти за корень сервера.
+    const crumbsList = picker.breadcrumbs || [];
+    const parentPath = crumbsList.length > 1 ? crumbsList[crumbsList.length - 2].path : '/';
+    const upRow =
+      picker.path === '/'
+        ? null
+        : el(
+            'div',
+            { class: 'rw-picker-row' },
+            el('span', { class: 'rw-ico', text: '↩' }),
+            el(
+              'button',
+              {
+                class: 'rw-pname',
+                style: {
+                  border: 'none',
+                  background: 'transparent',
+                  color: 'var(--rw-accent)',
+                  font: 'inherit',
+                  textAlign: 'left',
+                  cursor: 'pointer',
+                  padding: '0',
+                },
+                onclick: () => this.loadPicker(parentPath),
+              },
+              'На уровень выше',
+            ),
+          );
+
     const rows = picker.entries.map((entry) => {
       const checkbox = el('input', {
         type: 'checkbox',
@@ -1802,7 +1848,7 @@ class App {
       {
         class: 'rw-overlay',
         onclick: (event) => {
-          if (event.target === event.currentTarget) this.closeModal();
+          if (event.target === event.currentTarget) this.backToEditor();
         },
       },
       el(
@@ -1812,11 +1858,15 @@ class App {
           'div',
           { class: 'rw-modal-head' },
           el(
+            'button',
+            { class: 'rw-btn small', onclick: () => this.backToEditor() },
+            '← Назад к профилю',
+          ),
+          el(
             'h3',
-            null,
+            { style: { flex: '1', margin: '0' } },
             picker.mode === 'targets' ? 'Выбор файлов и каталогов для удаления' : 'Выбор исключений',
           ),
-          el('button', { class: 'rw-btn small', onclick: () => this.closeModal() }, 'Закрыть'),
         ),
         el('div', { class: 'rw-notice' }, 'Клик по каталогу — перейти внутрь. Чекбокс — отметить для добавления.'),
         crumbs,
@@ -1826,8 +1876,8 @@ class App {
           { class: 'rw-picker-list' },
           picker.loading
             ? el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Читаю каталог…')
-            : rows.length
-              ? rows
+            : rows.length || upRow
+              ? [upRow, ...rows]
               : el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Пусто'),
         ),
         el(
@@ -1885,7 +1935,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.2.0',
+  version: '1.3.3',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
