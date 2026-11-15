@@ -103,6 +103,7 @@ rust-autowipe/            каталог плагина (имя = name в plugin
   backend/                роуты, планировщик, fileTunnel, оркестрация вайпа
   frontend/frontend.mjs   self-contained UI (без React-хуков и импортов)
 docs/RUST-AUTOWIPE-RU.md  полное руководство (установка, настройка, диагностика)
+CHANGELOG.md              история версий
 index.json                индекс маркетплейса (его URL добавляют в панель)
 tools/test.mjs            тесты backend-логики (23 проверки)
 tools/ui-smoke.mjs        дымовой тест UI на DOM-шиме
