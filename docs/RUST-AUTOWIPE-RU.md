@@ -5,7 +5,7 @@
 
 Проверено по документации Catalyst (релиз **v1.89.0**, ноябрь 2026) и исходникам
 `catalystctl/catalyst`. В комплекте: исходники плагина, собранный пакет
-`dist/rust-autowipe-1.0.1.catpkg.zip`, индекс маркетплейса и тесты.
+`dist/rust-autowipe-1.1.0.catpkg.zip`, индекс маркетплейса и тесты.
 
 ---
 
@@ -55,6 +55,26 @@
 ---
 
 ## 2. Что делает плагин
+
+### Привязка к серверу и яйцу
+
+Плагин — **серверная вкладка**, а не панельная: она объявлена как
+`location: 'server'` с фильтром по шаблону:
+
+```js
+templateFilter: { namePattern: 'rust' }
+```
+
+- Панель показывает вкладку только внутри сервера, чей шаблон (яйцо) матчится этой
+  регуляркой (без учёта регистра): «Rust», «Rust Dedicated Server», «Rust (Oxide)» и т.п.
+- Если шаблон назван иначе, поправьте `namePattern` в
+  `rust-autowipe/frontend/frontend.mjs`, пересоберите пакет (`python tools/pack.py`)
+  и обновите плагин.
+- Все backend-роуты имеют вид `/api/plugins/rust-autowipe/servers/:serverId/…`.
+  Перед обработкой плагин проверяет доступ к серверу: владелец, админ панели либо
+  подтверждение панели по cookie/ключу вызывающего (так проходят субпользователи).
+- Профили и история прогонов хранят `serverId`; чужой профиль нельзя прочитать,
+  изменить или запустить через роут другого сервера.
 
 ### Расписание (требование 1)
 
@@ -137,7 +157,7 @@ docs/
 index.json                         индекс маркетплейса (этот URL добавляют в панель)
 
 tools/
-  test.mjs                         тесты backend-логики (23 проверки)
+  test.mjs                         тесты backend-логики (28 проверок)
   ui-smoke.mjs                     дымовой тест UI на DOM-шиме
   pack.py                          сборка .catpkg.zip + sha256 + index.json
   check_index.py                   проверка индекса/пакета/схемы plugin.json (он же в CI)
@@ -147,8 +167,8 @@ tools/
 .github/workflows/ci.yml           CI: тесты + проверка индекса и пакета
 
 dist/
-  rust-autowipe-1.0.1.catpkg.zip
-  rust-autowipe-1.0.1.catpkg.zip.sha256
+  rust-autowipe-1.1.0.catpkg.zip
+  rust-autowipe-1.1.0.catpkg.zip.sha256
 ```
 
 Размер пакета — ~38 КБ, зависимостей нет: backend — чистый ESM на `node:*` и `fetch`,
@@ -172,6 +192,8 @@ docker compose -f /opt/catalyst/catalyst-docker/docker-compose.yml restart backe
 
 **Admin → Extensions → Plugins → Rust AutoWipe → Enable** → принять дисклеймер
 (в нём будут перечислены `server.read`, `files.read`, `files.write`).
+Затем откройте **сервер с шаблоном Rust** — вкладка **Rust AutoWipe** появится в его
+карточке (см. §2 «Привязка к серверу и яйцу»).
 
 > Обновление: скопировать файлы поверх (`docker cp ./rust-autowipe/. catalyst-backend:/var/lib/catalyst/plugins/rust-autowipe/`)
 > и вызвать `POST /api/plugins/rust-autowipe/reload` (см. §4.4) либо перезапустить backend.
@@ -181,12 +203,12 @@ docker compose -f /opt/catalyst/catalyst-docker/docker-compose.yml restart backe
 Нужен HTTPS-хостинг для архива (GitHub Release, ваш CDN, nginx на том же сервере).
 
 ```bash
-SHA=$(cut -d' ' -f1 dist/rust-autowipe-1.0.1.catpkg.zip.sha256)
+SHA=$(cut -d' ' -f1 dist/rust-autowipe-1.1.0.catpkg.zip.sha256)
 
 curl -X POST https://panel.example.com/api/plugins/install \
   -H "Authorization: Bearer $CATALYST_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d "{\"url\":\"https://cdn.example.com/rust-autowipe-1.0.1.catpkg.zip\",\"sha256\":\"$SHA\"}"
+  -d "{\"url\":\"https://cdn.example.com/rust-autowipe-1.1.0.catpkg.zip\",\"sha256\":\"$SHA\"}"
 ```
 
 `sha256` обязателен: панель проверяет дайджест до распаковки, без него — `CHECKSUM_REQUIRED`.
@@ -214,7 +236,7 @@ curl -X POST https://panel.example.com/api/plugins/install \
 - `raw.githubusercontent.com` кэширует файлы ещё примерно на 5 минут (заголовок
   `no-cache` этот кэш не пробивает). Сразу после `git push` панель может видеть
   прошлую версию — подождите несколько минут. Пакет новой версии лежит по новому
-  URL (`…-1.0.1.catpkg.zip`), кэша у него нет, поэтому после обновления индекса
+  URL (`…-1.1.0.catpkg.zip`), кэша у него нет, поэтому после обновления индекса
   он скачивается сразу;
 - при скачивании панель требует **HTTPS** и публичный хост: `raw.githubusercontent.com`
   подходит, локальные/приватные адреса отклоняются (`FORBIDDEN_HOST`);
@@ -296,10 +318,12 @@ curl -X POST https://panel.example.com/api/plugins/rust-autowipe/reload \
 
 Плагин объявляет роли (появятся в **Admin → Access Control → Roles → Plugins**):
 
-- `rust-autowipe.view` — видеть вкладку, профили, расписание, историю;
+- `rust-autowipe.view` — видеть вкладку и расписание (владелец сервера видит их и без этой роли);
 - `rust-autowipe.manage` — создавать/менять/удалять профили (включая списки путей!);
 - `rust-autowipe.run` — кнопка «Запустить сейчас».
 
+Доступ к самому серверу проверяется отдельно: владелец сервера и админ панели проходят
+всегда, субпользователь — если панель подтверждает его доступ к этому серверу.
 Администратор с `*` видит и умеет всё.
 
 > `rust-autowipe.manage` — это право менять то, что будет удалено. Выдавайте только тем,
@@ -346,6 +370,9 @@ curl -X POST https://panel.example.com/api/plugins/rust-autowipe/reload \
 
 ## 7. Как устроен UI и почему так
 
+Вкладка серверная: панель передаёт компоненту `{ serverId }`, а плагин строит интерфейс
+только вокруг этого сервера (без выбора сервера и без панельного списка).
+
 Маркетплейс-плагин грузится как `frontend/frontend.mjs` — **самодостаточный бандл**.
 Панель не даёт ему свой React: в бандле своя копия React, и любой хук падает с
 «null dispatcher». Компилировать UI в образ панели (путь официальных плагинов) для
@@ -371,8 +398,11 @@ CSS инжектится один раз (`<style id="rust-autowipe-styles">`), 
 
 - **Удаление необратимо.** Перед первым боевым вайпом сделайте бэкап сервера
   (панель → Backups) и прогоните профиль в режиме **dry-run**.
-- Плагин держит `files.write`: файловый туннель не проверяет владельца сервера, он доверяет
-  плагину. Не выдавайте плагину лишнего и не давайте роль `rust-autowipe.manage` недоверенным.
+- Плагин держит `files.write`: файловый туннель сам не проверяет владельца, поэтому плагин
+  на каждом роуте проверяет доступ к серверу (владелец, админ или подтверждение панели).
+  Не давайте роль `rust-autowipe.manage` недоверенным.
+- Планировщик глобальный: он выполняет профили всех серверов, даже если вкладка открыта
+  на одном из них. Профиль привязан к своему `serverId` и чужие файлы не трогает.
 - API-ключ хранится в конфиге плагина (поле типа `password`) и виден только админам
   в UI панели; но он лежит в БД панели в открытом виде — обращайтесь с ним как с секретом.
 - Плагин не делает бэкапов и не обновляет игру: это отдельные задачи панели.
@@ -400,7 +430,10 @@ CSS инжектится один раз (`<style id="rust-autowipe-styles">`), 
 
 | Симптом | Что проверить |
 |---|---|
-| Вкладки нет | плагин включён? `GET /api/plugins` показывает `enabled: true`? Перезагрузите страницу с Ctrl+F5 |
+| Вкладки нет в карточке сервера | плагин включён? шаблон сервера матчится `namePattern` из `templateFilter` (по умолчанию `rust`)? перезагрузите страницу с Ctrl+F5 |
+| Вкладки нет ни на одном сервере | плагин включён (`GET /api/plugins` → `enabled: true`)? в манифесте есть `frontend`, а в пакете — `frontend/frontend.mjs`? |
+| «Нет доступа к этому серверу» | вы не владелец и не админ; субпользователю нужен доступ к серверу, выданный в панели |
+| «Недостаточно прав: нужен rust-autowipe.manage» | роль пользователя не содержит это право (Admin → Roles → Plugins) |
 | «Нет API-ключа» | Settings → `apiKey`; «Диагностика» покажет текст ошибки |
 | `401`/`403` в диагностике | у ключа нет `server.read` / `server.start` / `server.stop`; ключ от другой панели |
 | `ECONNREFUSED 127.0.0.1:3000` | backend слушает другой порт: задайте `panelUrl` (например `http://127.0.0.1:3000`) или публичный URL |
@@ -457,7 +490,7 @@ python tools/check_index.py
 
 ## 11. Чек-лист первого запуска
 
-- [ ] Плагин установлен и включён, вкладка **Rust AutoWipe** открывается
+- [ ] Плагин установлен и включён, вкладка **Rust AutoWipe** открывается в карточке Rust-сервера
 - [ ] Создан API-ключ (`server.read`, `server.start`, `server.stop`), вставлен в Settings
 - [ ] «Диагностика» — зелёная
 - [ ] Создан профиль: сервер, расписание, пресет, исключение `/server/*/cfg`

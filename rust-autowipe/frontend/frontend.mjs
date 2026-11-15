@@ -320,17 +320,17 @@ function blankDraft(serverId) {
 }
 
 class App {
-  constructor(root) {
+  constructor(root, serverId) {
     this.root = root;
+    this.serverId = String(serverId || '');
     this.state = {
       loading: true,
       error: null,
       status: null,
-      servers: [],
+      server: null,
       profiles: [],
       runs: [],
       presets: [],
-      selectedServerId: '',
       modal: null,
       picker: null,
       preview: null,
@@ -338,6 +338,10 @@ class App {
       busy: false,
     };
     this.toastTimer = null;
+  }
+
+  apiBase() {
+    return `servers/${encodeURIComponent(this.serverId)}`;
   }
 
   async start() {
@@ -364,27 +368,26 @@ class App {
     this.state.loading = true;
     this.state.error = null;
     this.render();
+
+    if (!this.serverId) {
+      this.state.loading = false;
+      this.state.error = 'Вкладка открыта без сервера: плагин работает только в контексте сервера.';
+      this.render();
+      return;
+    }
+
+    const base = this.apiBase();
     try {
-      const [status, servers, profiles, presets] = await Promise.all([
-        api('status'),
-        api('servers'),
-        api('profiles'),
+      const [status, profiles, presets] = await Promise.all([
+        api(`${base}/status`),
+        api(`${base}/profiles`),
         api('presets'),
       ]);
       this.state.status = status;
-      this.state.servers = Array.isArray(servers) ? servers : [];
+      this.state.server = status?.server || null;
       this.state.profiles = Array.isArray(profiles) ? profiles : [];
       this.state.presets = Array.isArray(presets) ? presets : [];
-      if (!this.state.selectedServerId && this.state.servers.length) {
-        this.state.selectedServerId = this.state.servers[0].id;
-      }
-      if (
-        this.state.selectedServerId &&
-        !this.state.servers.some((server) => server.id === this.state.selectedServerId)
-      ) {
-        this.state.selectedServerId = this.state.servers[0]?.id || '';
-      }
-      this.state.runs = await api('runs?limit=60');
+      this.state.runs = await api(`${base}/runs?limit=60`);
     } catch (error) {
       this.state.error = error.message;
     }
@@ -393,9 +396,10 @@ class App {
   }
 
   async refreshRuns() {
+    const base = this.apiBase();
     try {
-      this.state.runs = await api('runs?limit=60');
-      this.state.profiles = await api('profiles');
+      this.state.runs = await api(`${base}/runs?limit=60`);
+      this.state.profiles = await api(`${base}/profiles`);
     } catch (error) {
       this.toast('bad', error.message);
     }
@@ -410,15 +414,6 @@ class App {
       this.state.toast = null;
       this.render();
     }, 4500);
-  }
-
-  serverById(id) {
-    return this.state.servers.find((server) => server.id === id) || null;
-  }
-
-  profilesForSelected() {
-    if (!this.state.selectedServerId) return this.state.profiles;
-    return this.state.profiles.filter((profile) => profile.serverId === this.state.selectedServerId);
   }
 
   render() {
@@ -439,7 +434,7 @@ class App {
 
     append(this.root, [
       this.renderHeader(),
-      this.renderGrid(),
+      this.renderMain(),
       this.renderRuns(),
       this.state.toast
         ? el('div', { class: `rw-toast ${this.state.toast.type}` }, this.state.toast.text)
@@ -450,9 +445,17 @@ class App {
 
   renderHeader() {
     const status = this.state.status || {};
-    const chips = [
-      el('span', { class: 'rw-chip', 'data-rw-clock': '1' }, this.panelClockText()),
-    ];
+    const chips = [];
+    if (this.state.server) {
+      chips.push(
+        el(
+          'span',
+          { class: 'rw-chip' },
+          `${this.state.server.name} · ${statusLabel(this.state.server.status)}`,
+        ),
+      );
+    }
+    chips.push(el('span', { class: 'rw-chip', 'data-rw-clock': '1' }, this.panelClockText()));
     chips.push(
       status.hasApiKey
         ? el('span', { class: 'rw-chip ok' }, el('i', { class: 'rw-dot' }), 'API-ключ задан')
@@ -479,73 +482,25 @@ class App {
         el('span', null, 'расписание вайпов и удаление файлов'),
       ),
       ...chips,
-      el(
-        'button',
-        {
-          class: 'rw-btn',
-          title: 'Проверить API-ключ и обновить данные',
-          onclick: () => this.checkPanel(),
-        },
-        'Диагностика',
-      ),
+      status.permissions?.canManage === true
+        ? el(
+            'button',
+            {
+              class: 'rw-btn',
+              title: 'Проверить API-ключ панели',
+              onclick: () => this.checkPanel(),
+            },
+            'Диагностика',
+          )
+        : null,
       el('button', { class: 'rw-btn', onclick: () => this.reload() }, 'Обновить'),
     );
   }
 
-  renderGrid() {
-    return el('div', { class: 'rw-grid' }, this.renderSidebar(), this.renderMain());
-  }
-
-  renderSidebar() {
-    const all = el(
-      'div',
-      {
-        class: `rw-server ${this.state.selectedServerId ? '' : 'active'}`,
-        onclick: () => {
-          this.state.selectedServerId = '';
-          this.render();
-        },
-      },
-      el('span', { class: 'rw-ico', text: '≡' }),
-      el('span', { class: 'rw-name' }, 'Все серверы'),
-      el('span', { class: 'rw-count' }, String(this.state.profiles.length)),
-    );
-
-    const rows = this.state.servers.map((server) => {
-      const count = this.state.profiles.filter((profile) => profile.serverId === server.id).length;
-      return el(
-        'div',
-        {
-          class: `rw-server ${this.state.selectedServerId === server.id ? 'active' : ''}`,
-          onclick: () => {
-            this.state.selectedServerId = server.id;
-            this.render();
-          },
-          title: server.uuid || server.id,
-        },
-        el('span', {
-          class: 'rw-dot',
-          style: { background: server.status === 'running' ? 'var(--rw-ok)' : 'rgba(148,163,184,.6)' },
-        }),
-        el('span', { class: 'rw-name' }, server.name || server.id),
-        el('span', { class: 'rw-count' }, String(count)),
-      );
-    });
-
-    return el(
-      'aside',
-      { class: 'rw-side' },
-      el('div', { class: 'rw-side-head' }, 'Серверы'),
-      all,
-      ...(rows.length ? rows : [el('div', { class: 'rw-server' }, el('span', { class: 'rw-dim' }, 'Серверов нет'))]),
-    );
-  }
-
   renderMain() {
-    const server = this.serverById(this.state.selectedServerId);
-    const profiles = this.profilesForSelected();
-    const canManage = this.state.status?.permissions?.canManage !== false;
-    const canRun = this.state.status?.permissions?.canRun !== false;
+    const profiles = this.state.profiles;
+    const canManage = this.state.status?.permissions?.canManage === true;
+    const canRun = this.state.status?.permissions?.canRun === true;
 
     const header = el(
       'div',
@@ -553,32 +508,32 @@ class App {
       el(
         'h3',
         null,
-        server ? `Профили вайпа — ${server.name}` : 'Все профили вайпа',
-        server ? el('span', { class: 'rw-dim' }, ` · ${statusLabel(server.status)}`) : null,
+        'Профили вайпа',
+        this.state.server
+          ? el('span', { class: 'rw-dim' }, ` · ${this.state.server.name}`)
+          : null,
       ),
       el('span', { class: 'rw-spacer' }),
       canManage
         ? el(
             'button',
-            {
-              class: 'rw-btn primary',
-              disabled: !this.state.servers.length,
-              onclick: () => this.openEditor(null),
-            },
+            { class: 'rw-btn primary', onclick: () => this.openEditor(null) },
             '+ Новый профиль',
           )
-        : null,
+        : el(
+            'span',
+            { class: 'rw-dim' },
+            'Изменение профилей — только у роли с rust-autowipe.manage',
+          ),
     );
 
     const body = [];
-    if (!this.state.servers.length) {
-      body.push(el('div', { class: 'rw-empty' }, 'В панели нет серверов — создайте сервер, затем вернитесь сюда.'));
-    } else if (!profiles.length) {
+    if (!profiles.length) {
       body.push(
         el(
           'div',
           { class: 'rw-empty' },
-          'Профилей пока нет. Создайте профиль: выберите сервер, расписание и файлы/каталоги, которые нужно удалять при вайпе.',
+          'Профилей пока нет. Создайте профиль: расписание и файлы/каталоги, которые удаляются при вайпе этого сервера.',
         ),
       );
     } else {
@@ -667,7 +622,7 @@ class App {
           el(
             'div',
             { class: 'rw-meta' },
-            el('span', null, profile.serverName || this.serverById(profile.serverId)?.name || '—'),
+            el('span', null, profile.serverName || this.state.server?.name || '—'),
             el('span', null, scheduleText(profile.schedule)),
             el('span', null, `путей: ${(profile.targets || []).length}`),
             el('span', null, profile.enabled ? 'включён' : 'выключен'),
@@ -841,8 +796,9 @@ class App {
           schedule: clone(profile.schedule || blankDraft().schedule),
           options: { ...clone(profile.options || {}), commandsAfter: clone(profile.options?.commandsAfter || []) },
         }
-      : blankDraft(this.state.selectedServerId || this.state.servers[0]?.id || '');
+      : blankDraft(this.serverId);
     if (!draft.name) draft.name = '';
+    draft.serverId = this.serverId;
     this.state.modal = { type: 'editor', draft };
     this.render();
   }
@@ -854,29 +810,9 @@ class App {
   renderEditorModal() {
     const draft = this.draft();
     if (!draft) return null;
-    const canManage = this.state.status?.permissions?.canManage !== false;
-
-    const setDraft = (patch) => {
-      Object.assign(draft, patch);
-      this.render();
-    };
+    const canManage = this.state.status?.permissions?.canManage === true;
 
     const schedule = draft.schedule;
-
-    const serverSelect = el(
-      'select',
-      {
-        onchange: (event) => setDraft({ serverId: event.target.value }),
-        disabled: Boolean(draft.id),
-      },
-      ...this.state.servers.map((server) =>
-        el(
-          'option',
-          { value: server.id, selected: server.id === draft.serverId ? '' : null },
-          `${server.name} (${statusLabel(server.status)})`,
-        ),
-      ),
-    );
 
     const kindSelect = el(
       'select',
@@ -1107,7 +1043,6 @@ class App {
               },
             }),
           ),
-          el('div', { class: 'rw-field' }, el('label', null, 'Сервер'), serverSelect),
           el('div', { class: 'rw-field' }, el('label', null, 'Тип расписания'), kindSelect),
           ...scheduleFields,
           el(
@@ -1274,8 +1209,9 @@ class App {
         excludes: draft.excludes,
         options: draft.options,
       };
-      if (draft.id) await api(`profiles/${encodeURIComponent(draft.id)}`, { method: 'PUT', body: payload });
-      else await api('profiles', { method: 'POST', body: payload });
+      const base = this.apiBase();
+      if (draft.id) await api(`${base}/profiles/${encodeURIComponent(draft.id)}`, { method: 'PUT', body: payload });
+      else await api(`${base}/profiles`, { method: 'POST', body: payload });
       this.state.busy = false;
       this.state.modal = null;
       await this.reload();
@@ -1289,7 +1225,7 @@ class App {
 
   async toggleProfile(profile) {
     try {
-      await api(`profiles/${encodeURIComponent(profile.id)}`, {
+      await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}`, {
         method: 'PUT',
         body: { enabled: !profile.enabled },
       });
@@ -1307,7 +1243,7 @@ class App {
       confirmLabel: 'Удалить профиль',
       onConfirm: async () => {
         try {
-          await api(`profiles/${encodeURIComponent(profile.id)}`, { method: 'DELETE' });
+          await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}`, { method: 'DELETE' });
           await this.reload();
           this.toast('ok', 'Профиль удалён');
         } catch (error) {
@@ -1320,7 +1256,7 @@ class App {
 
   async runProfile(profile, dryRun = false) {
     try {
-      const result = await api(`profiles/${encodeURIComponent(profile.id)}/run`, {
+      const result = await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}/run`, {
         method: 'POST',
         body: dryRun ? { dryRun: true } : {},
       });
@@ -1336,7 +1272,7 @@ class App {
     this.state.busy = true;
     this.render();
     try {
-      const data = await api(`profiles/${encodeURIComponent(profile.id)}/preview`, { method: 'POST' });
+      const data = await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}/preview`, { method: 'POST' });
       this.state.preview = { profile, data };
     } catch (error) {
       this.toast('bad', error.message);
@@ -1412,7 +1348,7 @@ class App {
     this.render();
     try {
       const data = await api(
-        `files?serverId=${encodeURIComponent(picker.serverId)}&path=${encodeURIComponent(path)}`,
+        `${this.apiBase()}/files?path=${encodeURIComponent(path)}`,
       );
       picker.path = data.path;
       picker.entries = data.entries || [];
@@ -1574,7 +1510,7 @@ class App {
 
   async checkPanel() {
     try {
-      const data = await api('panel-check', { method: 'POST' });
+      const data = await api(`${this.apiBase()}/panel-check`, { method: 'POST' });
       if (data.ok) this.toast('ok', 'API-ключ работает, панель отвечает');
       else this.toast('bad', data.error || 'Проверка не прошла');
     } catch (error) {
@@ -1585,35 +1521,47 @@ class App {
 
 // ── Точка входа ───────────────────────────────────────────────────────────
 
-function mountRoot(node) {
-  if (!node || node.dataset.rwMounted === '1') return;
+function mountRoot(node, serverId) {
+  if (!node) return;
+  if (node.dataset.rwMounted === '1' && node.dataset.rwServer === serverId) return;
   node.dataset.rwMounted = '1';
-  const app = new App(node);
+  node.dataset.rwServer = serverId;
+  const app = new App(node, serverId);
   void app.start();
 }
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.0.1',
+  version: '1.1.0',
   displayName: 'Rust AutoWipe',
-  description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов',
+  description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
 };
 
-function AdminTab() {
-  return h('div', { class: 'rw-root', ref: mountRoot });
+/**
+ * Вкладка сервера: панель передаёт serverId, плагин работает только с ним.
+ * templateFilter показывает вкладку лишь на серверах, чей шаблон (яйцо)
+ * похож на Rust. Если шаблон назван иначе — поправьте namePattern.
+ */
+function ServerTab(props) {
+  const serverId = String(props?.serverId || '');
+  return h('div', {
+    class: 'rw-root',
+    ref: (node) => mountRoot(node, serverId),
+  });
 }
 
 export default {
   manifest,
   tabs: [
     {
-      id: 'rust-autowipe-admin',
+      id: 'rust-autowipe-server',
       label: 'Rust AutoWipe',
-      component: AdminTab,
-      location: 'admin',
+      component: ServerTab,
+      location: 'server',
       order: 60,
-      requiredPermissions: ['rust-autowipe.view'],
+      requiredPermissions: ['server.read'],
+      templateFilter: { namePattern: 'rust' },
     },
   ],
 };

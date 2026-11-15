@@ -1,13 +1,19 @@
 /**
  * Rust AutoWipe — backend-энтри плагина Catalyst.
  *
- * Возможности:
- *  - профили вайпа: сервер + расписание + список путей/шаблонов;
- *  - планировщик: ctx.scheduleTask('* * * * *'), состояние в коллекциях;
- *  - ручной запуск и предпросмотр («что будет удалено»);
- *  - история прогонов.
+ * Плагин привязан к конкретному серверу: все роуты живут под
+ * /api/plugins/rust-autowipe/servers/:serverId/…, а вкладка в панели —
+ * серверная (frontend: location 'server' + templateFilter по шаблону Rust).
  *
- * Роуты монтируются под /api/plugins/rust-autowipe/…
+ * Доступ к серверу проверяется отдельно от прав плагина:
+ *  - админ панели (admin.write / *);
+ *  - владелец сервера (servers.ownerId);
+ *  - иначе — делегирование в API панели тем же cookie/ключом вызывающего
+ *    (это покрывает субпользователей с выданным доступом к серверу).
+ *
+ * Права плагина (userPermissions) управляют только изменениями:
+ *  - rust-autowipe.manage — создание/правка/удаление профилей;
+ *  - rust-autowipe.run    — ручной запуск вайпа.
  */
 
 import { createPanelClient, resolvePanelBase } from './lib/api.js';
@@ -45,27 +51,24 @@ function wrap(ctx, handler) {
   };
 }
 
-/**
- * Регистрирует роут с двумя уровнями проверки:
- *  - config.requiredPermissions — хост проверяет права вызывающего до нашего кода;
- *  - preHandler — та же проверка через ctx.requirePermission (мягкий отказ 403).
- */
-function register(ctx, method, url, handler, { permission } = {}) {
-  const options = {
-    method,
-    url,
-    handler: wrap(ctx, handler),
-  };
-  if (permission) {
-    options.config = { requiredPermissions: [permission] };
-    if (typeof ctx.requirePermission === 'function') {
-      options.preHandler = ctx.requirePermission(permission);
-    }
+function hasPerm(ctx, request, token) {
+  if (typeof ctx.hasPermission !== 'function') return false;
+  try {
+    return Boolean(ctx.hasPermission(request, token));
+  } catch {
+    return false;
   }
-  ctx.registerRoute(options);
 }
 
-async function loadServerOrNull(ctx, serverId) {
+function userIdOf(ctx, request) {
+  try {
+    return typeof ctx.getUserId === 'function' ? ctx.getUserId(request) : null;
+  } catch {
+    return null;
+  }
+}
+
+async function loadServer(ctx, serverId) {
   if (!serverId) return null;
   try {
     return await ctx.db.servers.findUnique({ where: { id: serverId } });
@@ -75,8 +78,77 @@ async function loadServerOrNull(ctx, serverId) {
   }
 }
 
-async function collectProfiles(ctx) {
-  const profiles = await ctx.collection('profiles').find();
+/**
+ * Спросить панель, есть ли у вызывающего доступ к серверу, его же
+ * учётными данными. Покрывает субпользователей, которым выдан доступ
+ * через ServerAccess, — плагину этот список не виден.
+ */
+async function callerCanAccessViaPanel(ctx, request, serverId) {
+  const cookie = request?.headers?.cookie;
+  const authorization = request?.headers?.authorization;
+  if (!cookie && !authorization) return false;
+  const headers = {};
+  if (cookie) headers.cookie = cookie;
+  if (authorization) headers.authorization = authorization;
+  try {
+    const base = resolvePanelBase(ctx);
+    const response = await fetch(
+      `${base}/api/servers/${encodeURIComponent(serverId)}`,
+      { headers, signal: AbortSignal.timeout(5000) },
+    );
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * @returns {Promise<{ok: true, server: object} | {ok: false, status: number, error: string}>}
+ */
+async function serverAccess(ctx, request, serverId) {
+  if (!serverId) return { ok: false, status: 400, error: 'Не указан сервер' };
+
+  const server = await loadServer(ctx, serverId);
+  if (!server) return { ok: false, status: 404, error: 'Сервер не найден' };
+  if (server.suspendedAt) return { ok: false, status: 403, error: 'Сервер приостановлен' };
+
+  const userId = userIdOf(ctx, request);
+  const isAdmin = hasPerm(ctx, request, 'admin.write');
+  const isOwner = Boolean(userId && server.ownerId && String(server.ownerId) === String(userId));
+
+  if (isAdmin || isOwner) return { ok: true, server };
+  if (await callerCanAccessViaPanel(ctx, request, serverId)) return { ok: true, server };
+
+  return { ok: false, status: 403, error: 'Нет доступа к этому серверу' };
+}
+
+/**
+ * Регистрирует роут, привязанный к серверу: сначала проверка доступа
+ * к серверу, затем (опционально) право плагина на изменение/запуск.
+ */
+function serverRoute(ctx, method, url, handler, { token } = {}) {
+  ctx.registerRoute({
+    method,
+    url,
+    handler: wrap(ctx, async (request, reply) => {
+      const access = await serverAccess(ctx, request, String(request.params?.serverId ?? ''));
+      if (!access.ok) {
+        return reply.status(access.status).send({ success: false, error: access.error });
+      }
+      if (token && !hasPerm(ctx, request, token)) {
+        return reply.status(403).send({
+          success: false,
+          code: 'PLUGIN_ROUTE_FORBIDDEN',
+          error: `Недостаточно прав: нужен ${token} (выдаётся ролью в панели)`,
+        });
+      }
+      return handler(request, reply, access.server);
+    }),
+  });
+}
+
+async function collectProfiles(ctx, serverId) {
+  const profiles = await ctx.collection('profiles').find({ serverId });
   const now = new Date();
   return profiles
     .map((profile) => {
@@ -89,6 +161,14 @@ async function collectProfiles(ctx) {
       };
     })
     .sort((a, b) => String(a.name).localeCompare(String(b.name)));
+}
+
+/** Профиль по id, но только если он принадлежит этому серверу. */
+async function profileOfServer(ctx, serverId, profileId) {
+  const profile = await ctx.collection('profiles').findOne({ id: profileId });
+  if (!profile) return null;
+  if (String(profile.serverId) !== String(serverId)) return null;
+  return profile;
 }
 
 function runProfileNow(ctx, profile, reply) {
@@ -121,21 +201,33 @@ function runProfileNow(ctx, profile, reply) {
 }
 
 function registerRoutes(ctx) {
-  register(
+  // Пресеты путей одинаковы для всех серверов — глобальный справочник.
+  ctx.registerRoute({
+    method: 'GET',
+    url: '/presets',
+    handler: wrap(ctx, async () => ({ success: true, data: PRESETS })),
+  });
+
+  // ── Статус вкладки ──────────────────────────────────────────────────────
+  serverRoute(
     ctx,
     'GET',
-    '/status',
-    async (request) => {
-      const canManage =
-        typeof ctx.hasPermission === 'function' ? ctx.hasPermission(request, MANAGE) : false;
-      const canRun =
-        typeof ctx.hasPermission === 'function' ? ctx.hasPermission(request, RUN) : false;
+    '/servers/:serverId/status',
+    async (request, _reply, server) => {
+      const profiles = await ctx.collection('profiles').count({ serverId: server.id }).catch(() => 0);
       return {
         success: true,
         data: {
+          server: {
+            id: server.id,
+            name: server.name,
+            uuid: server.uuid,
+            nodeId: server.nodeId,
+            status: server.status,
+            suspended: Boolean(server.suspendedAt),
+          },
           version: ctx.manifest.version,
           clock: serverClock(),
-          panelUrl: resolvePanelBase(ctx),
           hasApiKey: Boolean(String(ctx.getConfig('apiKey') ?? '').trim()),
           dryRun: ctx.getConfig('dryRun') === true,
           schedulerEnabled: ctx.getConfig('schedulerEnabled') !== false,
@@ -143,17 +235,22 @@ function registerRoutes(ctx) {
           stopTimeoutSec: Number(ctx.getConfig('stopTimeoutSec') ?? 300),
           startTimeoutSec: Number(ctx.getConfig('startTimeoutSec') ?? 240),
           running: [...runningProfiles],
-          permissions: { canManage, canRun },
+          profilesCount: profiles,
+          permissions: {
+            canManage: hasPerm(ctx, request, MANAGE),
+            canRun: hasPerm(ctx, request, RUN),
+            canView: hasPerm(ctx, request, VIEW),
+          },
         },
       };
     },
-    { permission: VIEW },
   );
 
-  register(
+  // ── Диагностика API-ключа (только для тех, кто может менять) ────────────
+  serverRoute(
     ctx,
     'POST',
-    '/panel-check',
+    '/servers/:serverId/panel-check',
     async () => {
       const client = createPanelClient(ctx);
       if (!client.hasKey) {
@@ -166,41 +263,15 @@ function registerRoutes(ctx) {
         return { success: true, data: { ok: false, base: client.base, error: message(error) } };
       }
     },
-    { permission: VIEW },
+    { token: MANAGE },
   );
 
-  register(
+  // ── Файловый пикер ──────────────────────────────────────────────────────
+  serverRoute(
     ctx,
     'GET',
-    '/servers',
-    async () => {
-      const servers = await ctx.db.servers.findMany({
-        select: { id: true, name: true, uuid: true, nodeId: true, status: true },
-        orderBy: { name: 'asc' },
-      });
-      return {
-        success: true,
-        data: servers.map((server) => ({
-          id: server.id,
-          name: server.name,
-          uuid: server.uuid,
-          nodeId: server.nodeId,
-          status: server.status,
-        })),
-      };
-    },
-    { permission: VIEW },
-  );
-
-  register(
-    ctx,
-    'GET',
-    '/files',
-    async (request, reply) => {
-      const server = await loadServerOrNull(ctx, String(request.query?.serverId ?? ''));
-      if (!server) {
-        return reply.status(404).send({ success: false, error: 'Сервер не найден' });
-      }
+    '/servers/:serverId/files',
+    async (request, reply, server) => {
       const raw = String(request.query?.path ?? '/');
       const path = raw === '/' ? '/' : normalizePath(raw);
       if (!path) {
@@ -227,95 +298,92 @@ function registerRoutes(ctx) {
         },
       };
     },
-    { permission: VIEW },
   );
 
-  register(
-    ctx,
-    'GET',
-    '/presets',
-    async () => ({ success: true, data: PRESETS }),
-    { permission: VIEW },
-  );
+  // ── Профили вайпа этого сервера ────────────────────────────────────────
+  serverRoute(ctx, 'GET', '/servers/:serverId/profiles', async (_request, _reply, server) => ({
+    success: true,
+    data: await collectProfiles(ctx, server.id),
+  }));
 
-  register(
-    ctx,
-    'GET',
-    '/profiles',
-    async () => ({ success: true, data: await collectProfiles(ctx) }),
-    { permission: VIEW },
-  );
-
-  register(
+  serverRoute(
     ctx,
     'POST',
-    '/profiles',
-    async (request, reply) => {
-      const { errors, profile } = await buildProfile(ctx, request.body);
+    '/servers/:serverId/profiles',
+    async (request, reply, server) => {
+      const body = { ...(request.body || {}), serverId: server.id };
+      const { errors, profile } = await buildProfile(ctx, body);
       if (errors.length) {
         return reply.status(400).send({ success: false, error: errors.join('; '), errors });
       }
+      profile.serverId = server.id;
       profile.nextRunAt = nextOccurrence(profile.schedule, new Date()).toISOString();
       await ctx.collection('profiles').insert(profile);
       ctx.logger.info(
-        { id: profile.id, serverId: profile.serverId },
+        { id: profile.id, serverId: server.id },
         'rust-autowipe: профиль создан',
       );
       return { success: true, data: publicProfile(profile) };
     },
-    { permission: MANAGE },
+    { token: MANAGE },
   );
 
-  register(
+  serverRoute(
     ctx,
     'PUT',
-    '/profiles/:id',
-    async (request, reply) => {
-      const id = String(request.params?.id ?? '');
-      const existing = await ctx.collection('profiles').findOne({ id });
+    '/servers/:serverId/profiles/:profileId',
+    async (request, reply, server) => {
+      const id = String(request.params?.profileId ?? '');
+      const existing = await profileOfServer(ctx, server.id, id);
       if (!existing) {
-        return reply.status(404).send({ success: false, error: 'Профиль не найден' });
+        return reply.status(404).send({ success: false, error: 'Профиль не найден у этого сервера' });
       }
-      const { errors, profile } = await buildProfile(ctx, request.body, existing);
+      const body = { ...(request.body || {}), serverId: server.id };
+      const { errors, profile } = await buildProfile(ctx, body, existing);
       if (errors.length) {
         return reply.status(400).send({ success: false, error: errors.join('; '), errors });
       }
+      profile.serverId = server.id;
       profile.nextRunAt = nextOccurrence(profile.schedule, new Date()).toISOString();
       await ctx.collection('profiles').update({ id }, { $set: profile });
-      ctx.logger.info({ id }, 'rust-autowipe: профиль обновлён');
+      ctx.logger.info({ id, serverId: server.id }, 'rust-autowipe: профиль обновлён');
       return { success: true, data: publicProfile(profile) };
     },
-    { permission: MANAGE },
+    { token: MANAGE },
   );
 
-  register(
+  serverRoute(
     ctx,
     'DELETE',
-    '/profiles/:id',
-    async (request, reply) => {
-      const id = String(request.params?.id ?? '');
+    '/servers/:serverId/profiles/:profileId',
+    async (request, reply, server) => {
+      const id = String(request.params?.profileId ?? '');
       if (runningProfiles.has(id)) {
         return reply.status(409).send({
           success: false,
           error: 'Профиль выполняется — дождитесь окончания',
         });
       }
+      const existing = await profileOfServer(ctx, server.id, id);
+      if (!existing) {
+        return reply.status(404).send({ success: false, error: 'Профиль не найден у этого сервера' });
+      }
       const removed = await ctx.collection('profiles').delete({ id });
-      ctx.logger.info({ id, removed }, 'rust-autowipe: профиль удалён');
+      ctx.logger.info({ id, serverId: server.id, removed }, 'rust-autowipe: профиль удалён');
       return { success: true, data: { removed } };
     },
-    { permission: MANAGE },
+    { token: MANAGE },
   );
 
-  register(
+  serverRoute(
     ctx,
     'POST',
-    '/profiles/:id/run',
-    async (request, reply) => {
-      const id = String(request.params?.id ?? '');
-      const profile = await ctx.collection('profiles').findOne({ id });
+    '/servers/:serverId/profiles/:profileId/run',
+    async (request, reply, server) => {
+      const id = String(request.params?.profileId ?? '');
+      const profile = await profileOfServer(ctx, server.id, id);
       if (!profile) {
-        return reply.status(404).send({ success: false, error: 'Профиль не найден' });
+        return reply.status(404).send({ success: false, error: 'Профиль не найден у этого сервера' });
       }
       if (request.body?.dryRun === true) {
         return runProfileNow(
@@ -326,22 +394,18 @@ function registerRoutes(ctx) {
       }
       return runProfileNow(ctx, profile, reply);
     },
-    { permission: RUN },
+    { token: RUN },
   );
 
-  register(
+  serverRoute(
     ctx,
     'POST',
-    '/profiles/:id/preview',
-    async (request, reply) => {
-      const id = String(request.params?.id ?? '');
-      const profile = await ctx.collection('profiles').findOne({ id });
+    '/servers/:serverId/profiles/:profileId/preview',
+    async (request, reply, server) => {
+      const id = String(request.params?.profileId ?? '');
+      const profile = await profileOfServer(ctx, server.id, id);
       if (!profile) {
-        return reply.status(404).send({ success: false, error: 'Профиль не найден' });
-      }
-      const server = await loadServerOrNull(ctx, profile.serverId);
-      if (!server) {
-        return reply.status(404).send({ success: false, error: 'Сервер профиля не найден' });
+        return reply.status(404).send({ success: false, error: 'Профиль не найден у этого сервера' });
       }
       const expansion = await expandTargets(ctx, server, profile.targets, profile.excludes);
       return {
@@ -355,23 +419,25 @@ function registerRoutes(ctx) {
         },
       };
     },
-    { permission: VIEW },
   );
 
-  register(
+  // ── История прогонов этого сервера ─────────────────────────────────────
+  serverRoute(
     ctx,
     'GET',
-    '/runs',
-    async (request) => {
+    '/servers/:serverId/runs',
+    async (request, _reply, server) => {
       const limit = Math.min(200, Math.max(1, Number(request.query?.limit) || 50));
       const profileId = request.query?.profileId ? String(request.query.profileId) : null;
-      const runs = await ctx.collection('runs').find(
-        profileId ? { profileId } : {},
-        { sort: { startedAt: -1 }, limit },
-      );
+      const filter = profileId
+        ? { serverId: server.id, profileId }
+        : { serverId: server.id };
+      const runs = await ctx.collection('runs').find(filter, {
+        sort: { startedAt: -1 },
+        limit,
+      });
       return { success: true, data: runs };
     },
-    { permission: VIEW },
   );
 }
 
@@ -459,7 +525,7 @@ async function runTick(ctx) {
 const plugin = {
   async onLoad(ctx) {
     registerRoutes(ctx);
-    ctx.logger.info('rust-autowipe: маршруты зарегистрированы');
+    ctx.logger.info('rust-autowipe: маршруты зарегистрированы (server-scoped)');
   },
 
   async onEnable(ctx) {
@@ -483,4 +549,4 @@ const plugin = {
 };
 
 export default plugin;
-export { runTick };
+export { runTick, serverAccess };

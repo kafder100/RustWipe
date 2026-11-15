@@ -193,7 +193,13 @@ function makeTunnel(tree = TREE, { failOn = null } = {}) {
   };
 }
 
-function makeContext({ tunnel, config = {}, servers = [] } = {}) {
+function makeContext({
+  tunnel,
+  config = {},
+  servers = [],
+  userId = 'user_owner',
+  perms = ['*'],
+} = {}) {
   const stores = new Map();
   const routes = [];
   const tasks = [];
@@ -248,7 +254,7 @@ function makeContext({ tunnel, config = {}, servers = [] } = {}) {
   };
 
   const ctx = {
-    manifest: { name: 'rust-autowipe', version: '1.0.0' },
+    manifest: { name: 'rust-autowipe', version: '1.1.0' },
     originalConfig: {},
     logger: {
       info: () => {},
@@ -293,9 +299,38 @@ function makeContext({ tunnel, config = {}, servers = [] } = {}) {
     callPluginApi: async () => null,
     fileTunnel: tunnel,
     requirePermission: () => async () => {},
-    hasPermission: () => true,
+    getUserId: () => userId,
+    hasPermission: (_request, token) => perms.includes('*') || perms.includes(token),
   };
   return { ctx, stores, routes, tasks, events };
+}
+
+/** Поддельный Fastify-reply: запоминает код и тело. */
+function makeReply() {
+  return {
+    statusCode: 200,
+    payload: undefined,
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    send(payload) {
+      this.payload = payload;
+      return payload;
+    },
+  };
+}
+
+function routeOf(routes, method, url) {
+  return routes.find((route) => route.method === method && route.url === url) || null;
+}
+
+async function callRoute(routes, method, url, { params = {}, query = {}, body, headers = {} } = {}) {
+  const route = routeOf(routes, method, url);
+  assert.ok(route, `нет роута ${method} ${url}`);
+  const reply = makeReply();
+  const result = await route.handler({ params, query, body, headers }, reply);
+  return { result, reply };
 }
 
 await test('expandTargets раскрывает маски и учитывает exclude', async () => {
@@ -502,35 +537,165 @@ await test('пустое раскрытие — ошибка, но остано�
 });
 
 // ── Плагин целиком ────────────────────────────────────────────────────────
-await test('onLoad регистрирует роуты, onEnable — планировщик', async () => {
+await test('onLoad регистрирует только серверные роуты, onEnable — планировщик', async () => {
   const { ctx, routes, tasks } = makeContext({
     tunnel: makeTunnel(),
     config: { schedulerEnabled: true },
-    servers: [{ id: 'srv1', uuid: 'u', nodeId: 'n', name: 'Rust', status: 'stopped' }],
+    servers: [{ id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'user_owner', name: 'Rust', status: 'stopped' }],
   });
   await plugin.onLoad(ctx);
   await plugin.onEnable(ctx);
 
   const urls = routes.map((r) => `${r.method} ${r.url}`);
   for (const expected of [
-    'GET /status',
-    'POST /panel-check',
-    'GET /servers',
-    'GET /files',
     'GET /presets',
-    'GET /profiles',
-    'POST /profiles',
-    'PUT /profiles/:id',
-    'DELETE /profiles/:id',
-    'POST /profiles/:id/run',
-    'POST /profiles/:id/preview',
-    'GET /runs',
+    'GET /servers/:serverId/status',
+    'POST /servers/:serverId/panel-check',
+    'GET /servers/:serverId/files',
+    'GET /servers/:serverId/profiles',
+    'POST /servers/:serverId/profiles',
+    'PUT /servers/:serverId/profiles/:profileId',
+    'DELETE /servers/:serverId/profiles/:profileId',
+    'POST /servers/:serverId/profiles/:profileId/run',
+    'POST /servers/:serverId/profiles/:profileId/preview',
+    'GET /servers/:serverId/runs',
   ]) {
     assert.ok(urls.includes(expected), `нет роута ${expected}: ${urls.join(', ')}`);
   }
-  assert.equal(routes.every((r) => Array.isArray(r.config?.requiredPermissions)), true);
+  // Никаких панельных роутов: всё, кроме справочника пресетов, привязано к серверу.
+  for (const url of urls) {
+    if (url === 'GET /presets') continue;
+    assert.ok(url.includes('/servers/:serverId/'), `роут вне сервера: ${url}`);
+  }
+  assert.equal(routes.every((r) => !r.config?.requiredPermissions), true);
   assert.equal(tasks.length, 1);
   assert.equal(tasks[0].cron, '* * * * *');
+});
+
+await test('владелец сервера читает данные, но без роли не может менять', async () => {
+  const server = { id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'owner_1', name: 'Rust', status: 'stopped' };
+  const { ctx, routes } = makeContext({
+    tunnel: makeTunnel(),
+    servers: [server],
+    userId: 'owner_1',
+    perms: [],
+  });
+  await plugin.onLoad(ctx);
+
+  const status = await callRoute(routes, 'GET', '/servers/:serverId/status', {
+    params: { serverId: 'srv1' },
+  });
+  assert.equal(status.result.success, true);
+  assert.equal(status.result.data.server.id, 'srv1');
+  assert.equal(status.result.data.permissions.canManage, false);
+  assert.equal(status.result.data.permissions.canRun, false);
+
+  const create = await callRoute(routes, 'POST', '/servers/:serverId/profiles', {
+    params: { serverId: 'srv1' },
+    body: { name: 'x', targets: ['/server/*'] },
+  });
+  assert.equal(create.reply.statusCode, 403);
+  assert.match(create.result.error, /rust-autowipe\.manage/);
+});
+
+await test('чужой сервер недоступен, даже с ролью manage', async () => {
+  const server = { id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'owner_1', name: 'Rust', status: 'stopped' };
+  const { ctx, routes } = makeContext({
+    tunnel: makeTunnel(),
+    servers: [server],
+    userId: 'stranger',
+    perms: ['rust-autowipe.manage', 'rust-autowipe.run', 'rust-autowipe.view'],
+  });
+  await plugin.onLoad(ctx);
+
+  const status = await callRoute(routes, 'GET', '/servers/:serverId/status', {
+    params: { serverId: 'srv1' },
+  });
+  assert.equal(status.reply.statusCode, 403);
+  assert.match(status.result.error, /Нет доступа/);
+});
+
+await test('админ панели проходит к любому серверу', async () => {
+  const server = { id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'owner_1', name: 'Rust', status: 'stopped' };
+  const { ctx, routes } = makeContext({
+    tunnel: makeTunnel(),
+    servers: [server],
+    userId: 'admin_1',
+    perms: ['admin.write'],
+  });
+  await plugin.onLoad(ctx);
+
+  const status = await callRoute(routes, 'GET', '/servers/:serverId/status', {
+    params: { serverId: 'srv1' },
+  });
+  assert.equal(status.result.success, true);
+  assert.equal(status.result.data.server.id, 'srv1');
+});
+
+await test('субпользователь проходит, если панель подтверждает доступ по cookie', async () => {
+  const server = { id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'owner_1', name: 'Rust', status: 'stopped' };
+  const { ctx, routes } = makeContext({
+    tunnel: makeTunnel(),
+    servers: [server],
+    userId: 'sub_1',
+    perms: [],
+  });
+  await plugin.onLoad(ctx);
+
+  const calls = [];
+  globalThis.fetch = async (url, options) => {
+    calls.push({ url: String(url), cookie: options?.headers?.cookie });
+    return { ok: true, status: 200, text: async () => '{}' };
+  };
+
+  const status = await callRoute(routes, 'GET', '/servers/:serverId/status', {
+    params: { serverId: 'srv1' },
+    headers: { cookie: 'session=abc' },
+  });
+  assert.equal(status.result.success, true);
+  assert.equal(calls.length, 1);
+  assert.ok(calls[0].url.endsWith('/api/servers/srv1'));
+  assert.equal(calls[0].cookie, 'session=abc');
+});
+
+await test('профили изолированы по серверу', async () => {
+  const srv1 = { id: 'srv1', uuid: 'u1', nodeId: 'n', ownerId: 'owner_1', name: 'Rust #1', status: 'stopped' };
+  const srv2 = { id: 'srv2', uuid: 'u2', nodeId: 'n', ownerId: 'owner_1', name: 'Rust #2', status: 'stopped' };
+  const { ctx, routes, stores } = makeContext({
+    tunnel: makeTunnel(),
+    servers: [srv1, srv2],
+    userId: 'owner_1',
+    perms: ['rust-autowipe.manage', 'rust-autowipe.view', 'rust-autowipe.run'],
+  });
+  await plugin.onLoad(ctx);
+  stores.set('profiles', []);
+
+  const created = await callRoute(routes, 'POST', '/servers/:serverId/profiles', {
+    params: { serverId: 'srv1' },
+    body: { name: 'Вайп #1', targets: ['/server/*'], schedule: { kind: 'weekly', weekday: 4, time: '05:00' } },
+  });
+  assert.equal(created.result.success, true);
+
+  const list1 = await callRoute(routes, 'GET', '/servers/:serverId/profiles', { params: { serverId: 'srv1' } });
+  assert.equal(list1.result.data.length, 1);
+  assert.equal(list1.result.data[0].serverId, 'srv1');
+
+  const list2 = await callRoute(routes, 'GET', '/servers/:serverId/profiles', { params: { serverId: 'srv2' } });
+  assert.equal(list2.result.data.length, 0);
+
+  // Профиль srv1 нельзя править через роут srv2.
+  const profileId = created.result.data.id;
+  const cross = await callRoute(routes, 'PUT', '/servers/:serverId/profiles/:profileId', {
+    params: { serverId: 'srv2', profileId },
+    body: { name: 'взлом', targets: ['/server/*'] },
+  });
+  assert.equal(cross.reply.statusCode, 404);
+
+  // И нельзя поставить его в очередь через чужой сервер.
+  const crossRun = await callRoute(routes, 'POST', '/servers/:serverId/profiles/:profileId/run', {
+    params: { serverId: 'srv2', profileId },
+  });
+  assert.equal(crossRun.reply.statusCode, 404);
 });
 
 await test('планировщик запускает просроченный профиль и переносит nextRunAt', async () => {

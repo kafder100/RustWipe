@@ -203,32 +203,19 @@ globalThis.fetch = async (url, options = {}) => {
       return data;
     },
   });
-  if (path === 'status') {
+  if (path.endsWith('/run')) return json({ success: true, started: true, message: 'Вайп запущен в фоне.' });
+  if (path.endsWith('/preview')) {
     return json({
       success: true,
       data: {
-        version: '1.0.0',
-        clock: { now: new Date().toISOString(), timezone: 'Asia/Yekaterinburg', offsetMinutes: 300, utcOffset: 'UTC+05:00' },
-        panelUrl: 'http://127.0.0.1:3000',
-        hasApiKey: true,
-        dryRun: false,
-        schedulerEnabled: true,
-        catchUpMinutes: 120,
-        running: [],
-        permissions: { canManage: true, canRun: true },
+        paths: ['/server/rust/proceduralmap.4500.1.2.sav', '/server/rust/proceduralmap.4500.1.2.map'],
+        count: 2,
+        truncated: false,
+        server: { id: 'srv1', name: 'Rust EU #1', status: 'running' },
       },
     });
   }
-  if (path === 'servers') {
-    return json({
-      success: true,
-      data: [
-        { id: 'srv1', name: 'Rust EU #1', uuid: 'uuid-1', nodeId: 'node-1', status: 'running' },
-        { id: 'srv2', name: 'Rust EU #2', uuid: 'uuid-2', nodeId: 'node-1', status: 'stopped' },
-      ],
-    });
-  }
-  if (path === 'profiles') return json({ success: true, data: [profile] });
+  if (path.endsWith('/panel-check')) return json({ success: true, data: { ok: true, base: 'http://127.0.0.1:3000' } });
   if (path === 'presets') {
     return json({
       success: true,
@@ -237,8 +224,26 @@ globalThis.fetch = async (url, options = {}) => {
       ],
     });
   }
-  if (path.startsWith('runs')) return json({ success: true, data: [run] });
-  if (path.startsWith('files')) {
+  if (path === 'servers/srv1/status') {
+    return json({
+      success: true,
+      data: {
+        server: { id: 'srv1', name: 'Rust EU #1', uuid: 'uuid-1', nodeId: 'node-1', status: 'running' },
+        version: '1.1.0',
+        clock: { now: new Date().toISOString(), timezone: 'Asia/Yekaterinburg', offsetMinutes: 300, utcOffset: 'UTC+05:00' },
+        hasApiKey: true,
+        dryRun: false,
+        schedulerEnabled: true,
+        catchUpMinutes: 120,
+        running: [],
+        profilesCount: 1,
+        permissions: { canManage: true, canRun: true, canView: true },
+      },
+    });
+  }
+  if (path === 'servers/srv1/profiles') return json({ success: true, data: [profile] });
+  if (path.startsWith('servers/srv1/runs')) return json({ success: true, data: [run] });
+  if (path.startsWith('servers/srv1/files')) {
     return json({
       success: true,
       data: {
@@ -255,30 +260,19 @@ globalThis.fetch = async (url, options = {}) => {
       },
     });
   }
-  if (path.endsWith('/run')) return json({ success: true, started: true, message: 'Вайп запущен в фоне.' });
-  if (path.endsWith('/preview')) {
-    return json({
-      success: true,
-      data: {
-        paths: ['/server/rust/proceduralmap.4500.1.2.sav', '/server/rust/proceduralmap.4500.1.2.map'],
-        count: 2,
-        truncated: false,
-        server: { id: 'srv1', name: 'Rust EU #1', status: 'running' },
-      },
-    });
-  }
-  if (path === 'panel-check') return json({ success: true, data: { ok: true, base: 'http://127.0.0.1:3000' } });
   return json({ success: true, data: {} });
 };
 
 // ── Тест ──────────────────────────────────────────────────────────────────
 const mod = await import('../rust-autowipe/frontend/frontend.mjs');
 const tab = mod.default.tabs[0];
-assert.equal(tab.id, 'rust-autowipe-admin');
-assert.equal(tab.requiredPermissions[0], 'rust-autowipe.view');
+assert.equal(tab.id, 'rust-autowipe-server');
+assert.equal(tab.location, 'server');
+assert.deepEqual(tab.templateFilter, { namePattern: 'rust' });
+assert.deepEqual(tab.requiredPermissions, ['server.read']);
 
 const root = new DomNode('div');
-const element = tab.component();
+const element = tab.component({ serverId: 'srv1' });
 assert.equal(element.$$typeof, Symbol.for('react.transitional.element'));
 assert.equal(typeof element.props.ref, 'function');
 element.props.ref(root);
@@ -290,20 +284,21 @@ await new Promise((resolve) => realSetTimeout(resolve, 20));
 assert.ok(styles.size === 0 || true);
 assert.ok(textOf(root).includes('Rust AutoWipe'), 'нет заголовка');
 assert.ok(textOf(root).includes('Еженедельный карта-вайп'), 'нет профиля в списке');
-assert.ok(textOf(root).includes('Rust EU #1'), 'нет сервера в сайдбаре');
+assert.ok(textOf(root).includes('Rust EU #1'), 'нет имени сервера в шапке');
+assert.ok(!textOf(root).includes('Все серверы'), 'остался панельный список серверов');
 assert.ok(textOf(root).includes('История запусков'), 'нет истории');
 
 // Открываем редактор
 click(findByText(root, '+ Новый профиль'));
 assert.ok(textOf(root).includes('Новый профиль вайпа'), 'редактор не открылся');
 
-// Переключаем тип расписания (select → change)
+// Переключаем тип расписания (select → change); серверного селекта больше нет
 const selects = [];
 walk(root, (node) => {
   if (node.tagName === 'SELECT') selects.push(node);
 });
-assert.ok(selects.length >= 2, 'нет селектов в редакторе');
-const kindSelect = selects[1];
+assert.ok(selects.length >= 1, 'нет селектов в редакторе');
+const kindSelect = selects[0];
 const changeHandlers = kindSelect.listeners.change || [];
 for (const handler of changeHandlers) handler({ target: { value: 'monthly_nth_weekday' } });
 assert.ok(textOf(root).includes('Какой по счёту'), 'нет поля «какой по счёту»');
