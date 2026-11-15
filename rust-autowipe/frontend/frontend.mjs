@@ -274,13 +274,13 @@ function ensureStyles() {
 .rw-path-btn.danger:hover{color:var(--rw-danger)}
 /* Раскладка строки пути: жёсткая сетка «ручка · номер · путь · кнопки».
    !important — чтобы перебить прежние flex-правила и стили хоста. */
-.rw-path{display:grid !important;grid-template-columns:1.1rem 1.9rem minmax(0,1fr) auto !important;
-  align-items:center !important;gap:8px !important;padding:2px 6px !important;position:relative}
-.rw-path.editing{grid-template-columns:1.1rem 1.9rem minmax(0,1fr) !important}
+.rw-path{display:grid !important;grid-template-columns:0.85rem 1.3rem minmax(0,1fr) auto !important;
+  align-items:center !important;gap:6px !important;padding:2px 6px !important;position:relative}
+.rw-path.editing{grid-template-columns:0.85rem 1.3rem minmax(0,1fr) !important}
 .rw-path-grip{color:var(--rw-muted) !important;cursor:grab;user-select:none;text-align:center;
   font-size:12px;line-height:1;flex:none}
 .rw-path-grip:active{cursor:grabbing}
-.rw-path-n{color:var(--rw-muted) !important;text-align:right;font-variant-numeric:tabular-nums}
+.rw-path-n{color:var(--rw-muted) !important;text-align:left !important;font-variant-numeric:tabular-nums}
 .rw-path-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   text-align:left !important;color:var(--rw-fg,#e5e9f0) !important;flex:none !important;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -2160,7 +2160,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.3.5',
+  version: '1.3.6',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
