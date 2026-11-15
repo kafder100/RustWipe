@@ -334,9 +334,14 @@ curl -X POST https://panel.example.com/api/plugins/rust-autowipe/reload \
 
 1. **Admin → Access Control → API Keys → Create API Key**.
 2. Права ключа: `server.read`, `server.start`, `server.stop`, `server.startup`
-   (последнее — для записи `WORLD_SEED`/`WORLD_SIZE`);
-   если используете команды после запуска — ещё `console.write`.
-3. Скопировать ключ (показывается один раз).
+   (последнее — для записи `WORLD_SEED`/`WORLD_SIZE`) и `console.write`
+   (команды после запуска и предупреждения в чат).
+3. Для сообщений в чат нужен ещё **`admin.write`**: консольный роут панели
+   (`POST /api/servers/:id/console/command`) разрешает запись владельцу сервера или
+   администратору, поэтому не-админский ключ получает `403` даже с `console.write`.
+   Если сервер принадлежит другому пользователю — без `admin.write` предупреждения
+   и `commandsAfter` работать не будут.
+4. Скопировать ключ (показывается один раз).
 
 Затем **Admin → Extensions → Plugins → Rust AutoWipe → Settings**:
 
@@ -349,9 +354,14 @@ curl -X POST https://panel.example.com/api/plugins/rust-autowipe/reload \
 | `stopTimeoutSec` | `300` | Ожидание остановки |
 | `startTimeoutSec` | `240` | Ожидание запуска |
 | `dryRun` | `false` | Глобальный режим проверки для всех профилей |
+| `wipeWarningEnabled` | `true` | Предупреждения в чат перед плановым вайпом |
+| `wipeWarningMinutes` | `5` | За сколько минут начинать предупреждения |
+| `wipeWarningText` | `Вайп сервера через {minutes} мин` | Текст, `{minutes}` → число минут |
 
 Проверка: вкладка **Rust AutoWipe** → чип в шапке должен стать зелёным «API-ключ задан»,
-кнопка **«Диагностика»** дергает `GET /api/servers` вашим ключом.
+кнопка **«Диагностика»** дергает `GET /api/servers` вашим ключом, а **«Тест предупреждения»**
+в карточке профиля отправляет одно сообщение в чат сервера (сразу видно, если ключу
+не хватает прав).
 
 ### 5.2. Права для пользователей панели
 

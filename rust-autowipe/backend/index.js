@@ -25,7 +25,7 @@ import { describeSchedule, nextOccurrence, normalizeSchedule } from './lib/sched
 import { buildProfile, publicProfile } from './lib/store.js';
 import { serverClock } from './lib/time.js';
 import { executeProfileRun } from './lib/wipe.js';
-import { sendWipeWarnings } from './lib/warnings.js';
+import { sendWipeWarnings, formatWarning } from './lib/warnings.js';
 
 const MANAGE = 'rust-autowipe.manage';
 const RUN = 'rust-autowipe.run';
@@ -210,6 +210,35 @@ function registerRoutes(ctx) {
     handler: wrap(ctx, async () => ({ success: true, data: PRESETS })),
   });
 
+  // ── Тест предупреждения в чате ─────────────────────────────────────────
+  // Отправляет одно сообщение тем же путём, что и планировщик, чтобы админ мог
+  // проверить доставку не дожидаясь окна вайпа (и увидеть причину 403/404).
+  serverRoute(
+    ctx,
+    'POST',
+    '/servers/:serverId/warn-test',
+    async (request, reply, server) => {
+      const client = createPanelClient(ctx);
+      if (!client.hasKey) {
+        return reply
+          .status(400)
+          .send({ success: false, error: 'Не задан API-ключ панели (настройки плагина)' });
+      }
+      const minutes = Number(ctx.getConfig('wipeWarningMinutes') ?? 5);
+      const template = String(
+        ctx.getConfig('wipeWarningText') ?? 'Вайп сервера через {minutes} мин',
+      );
+      const text = formatWarning(template, Number.isFinite(minutes) && minutes > 0 ? minutes : 5);
+      try {
+        await client.command(server.id, `say ${text}`);
+      } catch (error) {
+        return reply.status(502).send({ success: false, error: message(error) });
+      }
+      return { success: true, data: { text, sentAt: new Date().toISOString() } };
+    },
+    { token: RUN },
+  );
+
   // ── Статус вкладки ──────────────────────────────────────────────────────
   serverRoute(
     ctx,
@@ -236,6 +265,11 @@ function registerRoutes(ctx) {
           catchUpMinutes: Number(ctx.getConfig('catchUpMinutes') ?? 120),
           stopTimeoutSec: Number(ctx.getConfig('stopTimeoutSec') ?? 300),
           startTimeoutSec: Number(ctx.getConfig('startTimeoutSec') ?? 240),
+          wipeWarning: {
+            enabled: ctx.getConfig('wipeWarningEnabled') !== false,
+            minutes: Number(ctx.getConfig('wipeWarningMinutes') ?? 5),
+            text: String(ctx.getConfig('wipeWarningText') ?? 'Вайп сервера через {minutes} мин'),
+          },
           running: [...runningProfiles],
           profilesCount: profiles,
           permissions: {

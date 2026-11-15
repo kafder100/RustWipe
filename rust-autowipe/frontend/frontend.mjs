@@ -728,6 +728,20 @@ class App {
     actions.push(
       el('button', { class: 'rw-btn', disabled: this.state.busy, onclick: () => this.previewProfile(profile) }, 'Что будет удалено'),
     );
+    if (canRun) {
+      actions.push(
+        el(
+          'button',
+          {
+            class: 'rw-btn',
+            disabled: this.state.busy,
+            title: 'Отправить одно предупреждение в чат сервера прямо сейчас',
+            onclick: () => this.testWarn(profile),
+          },
+          'Тест предупреждения',
+        ),
+      );
+    }
     if (canManage) {
       actions.push(el('button', { class: 'rw-btn', onclick: () => this.openEditor(profile) }, 'Изменить'));
       actions.push(
@@ -1869,6 +1883,20 @@ class App {
     }
   }
 
+  /** Проверка доставки предупреждения: одно сообщение в чат прямо сейчас. */
+  async testWarn() {
+    this.state.busy = true;
+    this.render();
+    try {
+      const data = await api(`${this.apiBase()}/warn-test`, { method: 'POST' });
+      this.toast('ok', `В чат отправлено: ${data?.text || 'предупреждение'}`);
+    } catch (error) {
+      this.toast('bad', `Не отправлено: ${error.message}`);
+    }
+    this.state.busy = false;
+    this.render();
+  }
+
   async previewProfile(profile) {
     this.state.busy = true;
     this.render();
@@ -2180,7 +2208,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.4.1',
+  version: '1.4.2',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
