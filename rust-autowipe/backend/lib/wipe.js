@@ -86,9 +86,24 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
   const skipped = [];
   const options = profile.options || {};
 
-  const addStep = (action, ok, detail) => {
+  // Длительность фазы: каждый шаг отдаёт в интерфейс, сколько он занял.
+  let lapAt = Date.now();
+  const lap = () => {
+    const now = Date.now();
+    const ms = now - lapAt;
+    lapAt = now;
+    return ms;
+  };
+
+  const addStep = (action, ok, detail, data) => {
     if (steps.length >= MAX_STEPS) return;
-    steps.push({ at: nowIso(), action, ok: Boolean(ok), detail: detail ?? '' });
+    steps.push({
+      at: nowIso(),
+      action,
+      ok: Boolean(ok),
+      detail: detail ?? '',
+      data: { ms: lap(), ...(data || {}) },
+    });
   };
 
   let server = null;
@@ -106,7 +121,9 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
 
   try {
     server = await loadServer(ctx, profile.serverId);
-    addStep('server', true, `${server.name} · статус «${statusOf(server) || 'неизвестен'}»`);
+    addStep('server', true, `${server.name} · статус «${statusOf(server) || 'неизвестен'}»`, {
+      status: statusOf(server) || null,
+    });
 
     if (!server.uuid || !server.nodeId) {
       throw new Error('У сервера нет uuid/nodeId — панель не отдала данные для файловых операций');
@@ -121,13 +138,18 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
     // ── 1. Остановка ──────────────────────────────────────────────────────
     const status = statusOf(server);
     if (dry) {
-      addStep('stop', true, 'режим проверки: сервер не останавливается');
+      addStep('stop', true, 'режим проверки: сервер не останавливается', {
+        status,
+        dryRun: true,
+      });
     } else if (status === 'stopped') {
-      addStep('stop', true, 'сервер уже остановлен');
+      addStep('stop', true, 'сервер уже остановлен', { status: 'stopped' });
     } else if (status === 'suspended') {
       throw new Error('Сервер приостановлен (suspended): вайп отменён');
     } else if (status === 'error' || status === 'crashed') {
-      addStep('stop', true, `сервер в статусе «${status}» — процесс уже не работает`);
+      addStep('stop', true, `сервер в статусе «${status}» — процесс уже не работает`, {
+        status,
+      });
     } else {
       if (!options.stopServer) {
         throw new Error(
@@ -140,7 +162,10 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
         );
       }
       await api.power(server.id, 'stop');
-      addStep('stop', true, 'команда остановки отправлена в панель');
+      addStep('stop', true, 'команда остановки отправлена в панель', {
+        status: 'stopping',
+        timeoutSec: Math.round(stopTimeoutMs / 1000),
+      });
       stoppedByUs = true;
       const waited = await waitForStatus(ctx, server.id, {
         accept: ['stopped'],
@@ -148,12 +173,12 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
         timeoutMs: stopTimeoutMs,
       });
       if (!waited.ok) throw new Error(`Сервер не остановился: ${waited.detail}`);
-      addStep('stop', true, 'сервер остановлен');
+      addStep('stop', true, 'сервер остановлен', { status: waited.status });
     }
 
     // ── 1.5. Сид и размер карты ───────────────────────────────────────────
     if (!mapChanging) {
-      addStep('map', true, 'сид и размер не меняются');
+      addStep('map', true, 'сид и размер не меняются', { changed: false });
     } else if (dry) {
       appliedSeed = mapPlan.seed;
       appliedSize = mapPlan.size;
@@ -161,6 +186,7 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
         'map',
         true,
         `режим проверки: было бы задано ${map.vars.seed}=${mapPlan.seed ?? '—'}, ${map.vars.size}=${mapPlan.size ?? '—'}`,
+        { changed: true, seed: mapPlan.seed, size: mapPlan.size, dryRun: true },
       );
     } else {
       const values = {};
@@ -176,7 +202,12 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
       }
       appliedSeed = mapPlan.seed;
       appliedSize = mapPlan.size;
-      addStep('map', true, Object.entries(values).map(([key, value]) => `${key}=${value}`).join(', '));
+      addStep(
+        'map',
+        true,
+        Object.entries(values).map(([key, value]) => `${key}=${value}`).join(', '),
+        { changed: true, seed: appliedSeed, size: appliedSize },
+      );
     }
 
     // ── 2. Раскрытие путей ────────────────────────────────────────────────
@@ -191,7 +222,10 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
         'Ни один путь не найден. Проверьте шаблоны: возможно, сервер ещё не создал файлы или неверна маска',
       );
     }
-    addStep('expand', true, `найдено путей: ${expansion.paths.length}`);
+    addStep('expand', true, `найдено путей: ${expansion.paths.length}`, {
+      paths: expansion.paths.length,
+      truncated: Boolean(expansion.truncated),
+    });
 
     // ── 3. Удаление ───────────────────────────────────────────────────────
     for (const path of expansion.paths) {
@@ -218,17 +252,28 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
       dry
         ? `режим проверки: было бы удалено ${deleted.length} путей`
         : `удалено ${deleted.length}, пропущено ${skipped.length}, ошибок ${errors.length}`,
+      {
+        deleted: deleted.length,
+        skipped: skipped.length,
+        errors: errors.length,
+        dryRun: dry,
+      },
     );
 
     // ── 4. Запуск ─────────────────────────────────────────────────────────
     if (!options.startServer) {
-      addStep('start', true, 'запуск выключен в профиле: поднимите сервер вручную');
+      addStep('start', true, 'запуск выключен в профиле: поднимите сервер вручную', {
+        started: false,
+      });
     } else if (dry) {
-      addStep('start', true, 'режим проверки: сервер не запускается');
+      addStep('start', true, 'режим проверки: сервер не запускается', { dryRun: true });
     } else {
       startAttempted = true;
       await api.power(server.id, 'start');
-      addStep('start', true, 'команда запуска отправлена в панель');
+      addStep('start', true, 'команда запуска отправлена в панель', {
+        status: 'starting',
+        timeoutSec: Math.round(startTimeoutMs / 1000),
+      });
       const waited = await waitForStatus(ctx, server.id, {
         accept: ['running', 'starting'],
         reject: FAILED_STATUSES,
@@ -236,12 +281,12 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
       });
       if (!waited.ok) throw new Error(`Сервер не запустился: ${waited.detail}`);
       stoppedByUs = false;
-      addStep('start', true, `статус «${waited.status}»`);
+      addStep('start', true, `статус «${waited.status}»`, { status: waited.status });
 
       for (const command of options.commandsAfter || []) {
         try {
           await api.command(server.id, command);
-          addStep('command', true, command);
+          addStep('command', true, command, { command });
         } catch (error) {
           warnings.push(
             `Команда «${command}» не отправлена: ${error instanceof Error ? error.message : error}`,
@@ -252,20 +297,20 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     errors.push(message);
-    addStep('error', false, message);
+    addStep('error', false, message, { message });
     ctx.logger.warn({ profileId: profile.id, error: message }, 'rust-autowipe: вайп прерван');
 
     // Если сервер остановили мы — обязательно пытаемся поднять обратно.
     if (!dry && stoppedByUs && !startAttempted && server && options.startServer !== false) {
       try {
         await api.power(server.id, 'start');
-        addStep('restore-start', true, 'сервер запущен после ошибки вайпа');
+        addStep('restore-start', true, 'сервер запущен после ошибки вайпа', { status: 'starting' });
         stoppedByUs = false;
       } catch (restoreError) {
         const restoreMessage =
           restoreError instanceof Error ? restoreError.message : String(restoreError);
         errors.push(`Не удалось запустить сервер после ошибки: ${restoreMessage}`);
-        addStep('restore-start', false, restoreMessage);
+        addStep('restore-start', false, restoreMessage, { message: restoreMessage });
       }
     }
   }

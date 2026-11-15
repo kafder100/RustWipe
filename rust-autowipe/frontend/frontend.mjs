@@ -286,8 +286,19 @@ function ensureStyles() {
 .rw-crumbs span{color:var(--rw-muted)}
 .rw-pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;
   max-height:320px;overflow:auto;border:1px solid var(--rw-border);border-radius:8px;padding:10px;background:rgba(148,163,184,.05)}
-.rw-steps{list-style:none;margin:6px 0 0;padding:0;display:flex;flex-direction:column;gap:3px;font-size:12px}
-.rw-steps li{display:flex;gap:8px}
+.rw-steps{display:flex;flex-direction:column;gap:2px;font-size:12px;margin-top:6px}
+.rw-step{border:1px solid transparent;border-radius:6px}
+.rw-step[open]{border-color:var(--rw-border);background:rgba(148,163,184,.04);padding:2px 6px 5px}
+.rw-step>summary{cursor:pointer;display:flex;gap:8px;align-items:baseline;list-style:none;padding:2px 0}
+.rw-step>summary::-webkit-details-marker{display:none}
+.rw-step>summary:hover{color:var(--rw-accent)}
+.rw-step-body{display:flex;flex-direction:column;gap:5px;margin:2px 0 4px 16px}
+.rw-step-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--rw-muted);font-variant-numeric:tabular-nums}
+.rw-step-detail{font-size:12px;word-break:break-word}
+.rw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;font-size:12px}
+.rw-kv-key{color:var(--rw-muted)}
+.rw-kv-val{font-variant-numeric:tabular-nums;word-break:break-word}
+.rw-step-paths summary{cursor:pointer;color:var(--rw-accent);font-size:12px}
 .rw-steps .rw-t{color:var(--rw-muted);font-variant-numeric:tabular-nums}
 .rw-details summary{cursor:pointer;color:var(--rw-accent);font-size:12px}
 .rw-inline{display:inline-flex;align-items:center;gap:6px}
@@ -297,6 +308,67 @@ function ensureStyles() {
 }
 
 // ── Приложение ────────────────────────────────────────────────────────────
+
+// ── Шаги вайпа: подписи и форматирование ──────────────────────────────────
+
+const STEP_LABELS = {
+  server: 'сервер',
+  stop: 'остановка',
+  map: 'сид и размер',
+  expand: 'поиск путей',
+  delete: 'удаление',
+  start: 'запуск',
+  command: 'команда в консоль',
+  error: 'ошибка',
+  'restore-start': 'восстановление запуска',
+};
+
+const DATA_LABELS = {
+  status: 'статус',
+  changed: 'изменено',
+  seed: 'сид',
+  size: 'размер',
+  paths: 'найдено путей',
+  truncated: 'список обрезан',
+  deleted: 'удалено',
+  skipped: 'пропущено',
+  errors: 'ошибок',
+  dryRun: 'режим проверки',
+  started: 'запуск',
+  timeoutSec: 'таймаут, с',
+  command: 'команда',
+  message: 'сообщение',
+};
+
+function fmtDuration(ms) {
+  if (!Number.isFinite(ms)) return '—';
+  if (ms < 1000) return `${Math.round(ms)} мс`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 2 : 1)} с`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.round((ms % 60000) / 1000);
+  return `${minutes} мин ${seconds} с`;
+}
+
+function fmtDataValue(value) {
+  if (typeof value === 'boolean') return value ? 'да' : 'нет';
+  if (Array.isArray(value)) return value.length ? value.join(', ') : '—';
+  if (value === null || value === undefined || value === '') return '—';
+  return String(value);
+}
+
+function shortenText(text, max) {
+  const value = String(text ?? '');
+  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+}
+
+function pathList(title, items) {
+  return el(
+    'details',
+    { class: 'rw-step-paths' },
+    el('summary', null, `${title} (${items.length})`),
+    el('div', { class: 'rw-pre' }, items.join('\n')),
+  );
+}
 
 function blankDraft(serverId) {
   return {
@@ -657,6 +729,79 @@ class App {
     );
   }
 
+  /** Один шаг вайпа: свёрнутая строка + раскрытие со статистикой. */
+  renderStep(step, index, run) {
+    const ok = step.ok !== false;
+    const label = STEP_LABELS[step.action] || step.action || 'шаг';
+    const data = step.data && typeof step.data === 'object' ? step.data : {};
+    const ms = typeof data.ms === 'number' ? data.ms : null;
+
+    const head = [
+      el('span', { class: 'rw-t', text: pad2(index + 1) }),
+      el('span', { class: 'rw-t', text: (step.at || '').slice(11, 23) }),
+      el(
+        'span',
+        { style: ok ? undefined : { color: 'var(--rw-danger)' } },
+        `${ok ? '✓' : '✕'} ${label}`,
+      ),
+      step.detail ? el('span', { class: 'rw-dim', text: `— ${shortenText(step.detail, 90)}` }) : null,
+      ms !== null ? el('span', { class: 'rw-t', text: fmtDuration(ms) }) : null,
+    ];
+
+    const body = [
+      el(
+        'div',
+        { class: 'rw-step-meta' },
+        el('span', null, `время: ${step.at || '—'}`),
+        ms !== null ? el('span', null, `длительность: ${fmtDuration(ms)}`) : null,
+        el('span', null, `результат: ${ok ? 'успех' : 'ошибка'}`),
+      ),
+    ];
+
+    if (step.detail) body.push(el('div', { class: 'rw-step-detail' }, step.detail));
+
+    const stats = Object.entries(data).filter(
+      ([key, value]) => key !== 'ms' && value !== null && value !== undefined && value !== '',
+    );
+    if (stats.length) {
+      body.push(
+        el(
+          'div',
+          { class: 'rw-kv' },
+          ...stats.map(([key, value]) =>
+            el(
+              'div',
+              { class: 'rw-kv-row' },
+              el('span', { class: 'rw-kv-key' }, DATA_LABELS[key] || key),
+              el('span', { class: 'rw-kv-val' }, fmtDataValue(value)),
+            ),
+          ),
+        ),
+      );
+    }
+
+    if (step.action === 'delete' && run) {
+      const deleted = Array.isArray(run.deleted) ? run.deleted : [];
+      if (deleted.length) body.push(pathList('удалённые пути', deleted));
+      const skipped = Array.isArray(run.skipped) ? run.skipped : [];
+      if (skipped.length) {
+        body.push(
+          pathList(
+            'пропущенные пути',
+            skipped.map((item) => `${item.path}${item.reason ? ` — ${item.reason}` : ''}`),
+          ),
+        );
+      }
+    }
+
+    return el(
+      'details',
+      { class: 'rw-step' },
+      el('summary', null, ...head),
+      el('div', { class: 'rw-step-body' }, ...body),
+    );
+  }
+
   renderRuns() {
     const offset = Number(this.state.status?.clock?.offsetMinutes ?? 0);
     const rows = this.state.runs.slice(0, 30).map((run) =>
@@ -682,23 +827,24 @@ class App {
           el(
             'details',
             { class: 'rw-details' },
-            el('summary', null, 'шаги'),
+            el('summary', null, `шаги (${(run.steps || []).length})`),
             el(
-              'ul',
+              'div',
               { class: 'rw-steps' },
-              ...(run.steps || []).map((step) =>
+              ...(run.steps || []).map((step, index) => this.renderStep(step, index, run)),
+              ...(run.errors || []).map((error) =>
                 el(
-                  'li',
-                  null,
-                  el('span', { class: 'rw-t', text: (step.at || '').slice(11, 19) }),
-                  el('span', {
-                    text: `${step.ok ? '✓' : '✕'} ${step.action}${step.detail ? ` — ${step.detail}` : ''}`,
-                    style: step.ok ? undefined : { color: 'var(--rw-danger)' },
-                  }),
+                  'div',
+                  { class: 'rw-step' },
+                  el('div', { class: 'rw-step-detail', style: { color: 'var(--rw-danger)' } }, `✕ ${error}`),
                 ),
               ),
               ...(run.warnings || []).map((warning) =>
-                el('li', null, el('span', { class: 'rw-t', text: '' }), el('span', { style: { color: 'var(--rw-warn)' } }, `! ${warning}`)),
+                el(
+                  'div',
+                  { class: 'rw-step' },
+                  el('div', { class: 'rw-step-detail', style: { color: 'var(--rw-warn)' } }, `! ${warning}`),
+                ),
               ),
             ),
           ),
