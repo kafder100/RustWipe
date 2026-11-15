@@ -105,6 +105,8 @@ export async function buildProfile(ctx, input, existing = null) {
     stopServer: toBool(source?.options?.stopServer ?? base?.options?.stopServer, true),
     startServer: toBool(source?.options?.startServer ?? base?.options?.startServer, true),
     dryRun: toBool(source?.options?.dryRun ?? base?.options?.dryRun, false),
+    // Предупреждения в чате: у профилей до 1.4.0 поля нет — включаем по умолчанию.
+    warnChat: toBool(source?.options?.warnChat ?? base?.options?.warnChat, true),
     commandsAfter: normalizeCommands(
       source?.options?.commandsAfter ?? base?.options?.commandsAfter,
     ),

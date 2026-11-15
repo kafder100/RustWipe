@@ -446,7 +446,7 @@ function blankDraft(serverId) {
     },
     targets: [],
     excludes: [],
-    options: { stopServer: true, startServer: true, dryRun: false, commandsAfter: [] },
+    options: { stopServer: true, startServer: true, dryRun: false, warnChat: true, commandsAfter: [] },
     map: {
       seed: { mode: 'random', value: null, values: [] },
       size: { mode: 'fixed', value: 3000, values: [2000, 3000, 4000, 5000, 6000] },
@@ -1714,6 +1714,19 @@ class App {
                 { class: 'rw-check' },
                 el('input', {
                   type: 'checkbox',
+                  checked: draft.options.warnChat === false ? null : '',
+                  onchange: (event) => {
+                    draft.options.warnChat = event.target.checked;
+                    this.render();
+                  },
+                }),
+                'Предупреждать в чате сервера перед вайпом (за 5 минут, раз в минуту)',
+              ),
+              el(
+                'label',
+                { class: 'rw-check' },
+                el('input', {
+                  type: 'checkbox',
                   checked: draft.options.dryRun ? '' : null,
                   onchange: (event) => {
                     draft.options.dryRun = event.target.checked;
@@ -2167,7 +2180,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.3.8',
+  version: '1.4.0',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',

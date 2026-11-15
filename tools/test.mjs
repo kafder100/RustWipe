@@ -20,6 +20,7 @@ import {
 } from '../rust-autowipe/backend/lib/glob.js';
 import { expandTargets } from '../rust-autowipe/backend/lib/glob-walk.js';
 import { executeProfileRun } from '../rust-autowipe/backend/lib/wipe.js';
+import { formatWarning, warningPlan } from '../rust-autowipe/backend/lib/warnings.js';
 import plugin, { runTick } from '../rust-autowipe/backend/index.js';
 import { PRESETS } from '../rust-autowipe/backend/lib/presets.js';
 
@@ -976,6 +977,19 @@ await test('dry-run не пишет переменные, но показыва�
   assert.equal(run.size, 3500);
   assert.equal(calls.filter((call) => call.url.endsWith('/variables')).length, 0);
   assert.ok(run.steps.some((step) => step.action === 'map' && step.detail.includes('WORLD_SEED=777')));
+});
+
+await test('предупреждения: окно 5 минут, счёт минут и подстановка', () => {
+  const now = Date.UTC(2026, 10, 16, 12, 0, 0);
+  assert.equal(warningPlan(now, now + 5 * 60000, 5), 5);
+  assert.equal(warningPlan(now, now + 4 * 60000 + 30000, 5), 5);
+  assert.equal(warningPlan(now, now + 3 * 60000 + 1000, 5), 4);
+  assert.equal(warningPlan(now, now + 30000, 5), 1);
+  assert.equal(warningPlan(now, now + 6 * 60000, 5), null);
+  assert.equal(warningPlan(now, now - 1000, 5), null);
+  assert.equal(warningPlan(now, now + 60000, 0), null);
+  assert.equal(formatWarning('Вайп через {minutes} мин', 3), 'Вайп через 3 мин');
+  assert.equal(formatWarning('{minutes}/{minutes}', 2), '2/2');
 });
 
 if (process.exitCode) {

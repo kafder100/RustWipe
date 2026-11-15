@@ -25,6 +25,7 @@ import { describeSchedule, nextOccurrence, normalizeSchedule } from './lib/sched
 import { buildProfile, publicProfile } from './lib/store.js';
 import { serverClock } from './lib/time.js';
 import { executeProfileRun } from './lib/wipe.js';
+import { sendWipeWarnings } from './lib/warnings.js';
 
 const MANAGE = 'rust-autowipe.manage';
 const RUN = 'rust-autowipe.run';
@@ -495,6 +496,17 @@ async function runTick(ctx) {
     const profiles = await ctx.collection('profiles').find();
     const now = new Date();
     const catchUpMinutes = Number(ctx.getConfig('catchUpMinutes') ?? 120);
+
+    // Предупреждения в чат — до запуска самих вайпов, чтобы сообщение успело
+    // уйти даже если этот же тик выполняет плановый вайп.
+    try {
+      await sendWipeWarnings(ctx, profiles, now);
+    } catch (error) {
+      ctx.logger.warn(
+        { error: message(error) },
+        'rust-autowipe: не удалось разослать предупреждения в чат',
+      );
+    }
 
     for (const profile of profiles) {
       if (!profile || profile.enabled === false) continue;
