@@ -19,6 +19,7 @@
 import { createPanelClient, resolvePanelBase } from './lib/api.js';
 import { expandTargets, listDirectory } from './lib/glob-walk.js';
 import { normalizePath, parentPath } from './lib/glob.js';
+import { describeMap } from './lib/mapgen.js';
 import { PRESETS } from './lib/presets.js';
 import { describeSchedule, nextOccurrence, normalizeSchedule } from './lib/schedule.js';
 import { buildProfile, publicProfile } from './lib/store.js';
@@ -155,6 +156,7 @@ async function collectProfiles(ctx, serverId) {
       return {
         ...publicProfile(profile),
         scheduleText: describeSchedule(profile.schedule),
+        mapText: describeMap(profile.map),
         overdue: Boolean(next && !Number.isNaN(next.getTime()) && next.getTime() < now.getTime()),
         running: runningProfiles.has(profile.id),
       };
@@ -259,6 +261,53 @@ function registerRoutes(ctx) {
         return { success: true, data: { ok: true, base: client.base } };
       } catch (error) {
         return { success: true, data: { ok: false, base: client.base, error: message(error) } };
+      }
+    },
+    { token: MANAGE },
+  );
+
+  // ── Переменные шаблона: какие из них сид/размер ─────────────────────────
+  serverRoute(
+    ctx,
+    'GET',
+    '/servers/:serverId/map-variables',
+    async (_request, reply, server) => {
+      const client = createPanelClient(ctx);
+      if (!client.hasKey) {
+        return reply.status(400).send({
+          success: false,
+          error: 'Не задан API-ключ панели: он нужен, чтобы прочитать переменные шаблона',
+        });
+      }
+      try {
+        const response = await client.getVariables(server.id);
+        const list = Array.isArray(response)
+          ? response
+          : Array.isArray(response?.data)
+            ? response.data
+            : [];
+        const variables = list
+          .filter((item) => item && typeof item.name === 'string' && item.name)
+          .map((item) => ({
+            name: item.name,
+            value: String(item.value ?? ''),
+            default: String(item.default ?? ''),
+            input: item.input ?? 'text',
+            rules: Array.isArray(item.rules) ? item.rules : [],
+          }));
+        const detect = (pattern) => variables.find((item) => pattern.test(item.name))?.name ?? null;
+        return {
+          success: true,
+          data: {
+            variables,
+            detected: { seed: detect(/SEED/i), size: detect(/SIZE/i) },
+          },
+        };
+      } catch (error) {
+        return reply.status(502).send({
+          success: false,
+          error: `Не удалось прочитать переменные: ${message(error)}`,
+        });
       }
     },
     { token: MANAGE },

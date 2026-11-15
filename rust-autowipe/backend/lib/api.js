@@ -27,7 +27,7 @@ export function createPanelClient(ctx) {
   async function call(method, path, body, { timeoutMs = 20000 } = {}) {
     if (!hasKey) {
       throw new Error(
-        'Не задан API-ключ панели (config.apiKey): без него нельзя останавливать и запускать сервер',
+        'Не задан API-ключ панели (config.apiKey): без него нельзя управлять сервером — останавливать/запускать его и менять переменные карты',
       );
     }
     const controller = new AbortController();
@@ -55,7 +55,14 @@ export function createPanelClient(ctx) {
       if (!response.ok || (json && json.success === false)) {
         const message =
           json?.error || json?.message || text || `HTTP ${response.status}`;
-        throw new Error(`${method} ${path} → ${response.status}: ${String(message).slice(0, 300)}`);
+        // PATCH /variables отвечает 422 с полями: «WORLD_SEED: между 1 и …».
+        const fields = json?.fields && typeof json.fields === 'object'
+          ? Object.entries(json.fields)
+              .map(([name, value]) => `${name}: ${value}`)
+              .join('; ')
+          : '';
+        const detail = fields ? `${message} (${fields})` : message;
+        throw new Error(`${method} ${path} → ${response.status}: ${String(detail).slice(0, 400)}`);
       }
       return json;
     } catch (error) {
@@ -83,6 +90,21 @@ export function createPanelClient(ctx) {
       return call('POST', `/api/servers/${encodeURIComponent(serverId)}/console/command`, {
         command,
       });
+    },
+    /** Переменные шаблона сервера (нужно server.read у ключа). */
+    getVariables(serverId) {
+      return call('GET', `/api/servers/${encodeURIComponent(serverId)}/variables`, undefined, {
+        timeoutMs: 10000,
+      });
+    },
+    /** Запись переменных шаблона (нужно server.startup у ключа). */
+    patchVariables(serverId, values) {
+      return call(
+        'PATCH',
+        `/api/servers/${encodeURIComponent(serverId)}/variables`,
+        values,
+        { timeoutMs: 15000 },
+      );
     },
   };
 }

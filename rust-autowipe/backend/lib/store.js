@@ -3,6 +3,7 @@
  */
 
 import { normalizePath } from './glob.js';
+import { normalizeMapSettings, validateMapInput } from './mapgen.js';
 import { normalizeSchedule } from './schedule.js';
 
 export function newId(prefix) {
@@ -92,6 +93,13 @@ export async function buildProfile(ctx, input, existing = null) {
 
   const excludes = normalizeList(source.excludes ?? base.excludes);
 
+  // Карта: у профилей, созданных до 1.2.0, поля map нет — сохраняем прежнее
+  // поведение («не трогать сид/размер»), чтобы обновление не меняло карту.
+  const legacyMap = !source.map && !base.map;
+  const rawMap = source.map ?? base.map;
+  errors.push(...validateMapInput(rawMap));
+  const map = normalizeMapSettings(rawMap, { legacy: legacyMap });
+
   const schedule = normalizeSchedule(source.schedule ?? base.schedule);
   const options = {
     stopServer: toBool(source?.options?.stopServer ?? base?.options?.stopServer, true),
@@ -117,10 +125,12 @@ export async function buildProfile(ctx, input, existing = null) {
     targets,
     excludes,
     options,
+    map,
     createdAt: base.createdAt || now,
     updatedAt: now,
   };
 
+  if (base.mapState !== undefined) profile.mapState = base.mapState;
   if (base.nextRunAt !== undefined) profile.nextRunAt = base.nextRunAt;
   if (base.lastRunAt !== undefined) profile.lastRunAt = base.lastRunAt;
   if (base.lastRunStatus !== undefined) profile.lastRunStatus = base.lastRunStatus;
@@ -142,11 +152,14 @@ export function publicProfile(profile) {
     targets: profile.targets || [],
     excludes: profile.excludes || [],
     options: profile.options || {},
+    map: profile.map || normalizeMapSettings(null),
     nextRunAt: profile.nextRunAt || null,
     lastRunAt: profile.lastRunAt || null,
     lastRunStatus: profile.lastRunStatus || null,
     lastRunId: profile.lastRunId || null,
     lastError: profile.lastError || null,
+    lastSeed: profile.lastSeed ?? null,
+    lastSize: profile.lastSize ?? null,
     createdAt: profile.createdAt || null,
     updatedAt: profile.updatedAt || null,
   };

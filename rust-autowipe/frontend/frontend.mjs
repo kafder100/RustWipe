@@ -316,6 +316,11 @@ function blankDraft(serverId) {
     targets: [],
     excludes: [],
     options: { stopServer: true, startServer: true, dryRun: false, commandsAfter: [] },
+    map: {
+      seed: { mode: 'random', value: null, values: [] },
+      size: { mode: 'fixed', value: 3000, values: [2000, 3000, 4000, 5000, 6000] },
+      vars: { seed: 'WORLD_SEED', size: 'WORLD_SIZE' },
+    },
   };
 }
 
@@ -625,6 +630,7 @@ class App {
             el('span', null, profile.serverName || this.state.server?.name || '—'),
             el('span', null, scheduleText(profile.schedule)),
             el('span', null, `путей: ${(profile.targets || []).length}`),
+            profile.mapText ? el('span', null, profile.mapText) : null,
             el('span', null, profile.enabled ? 'включён' : 'выключен'),
           ),
         ),
@@ -795,6 +801,7 @@ class App {
           ...clone(profile),
           schedule: clone(profile.schedule || blankDraft().schedule),
           options: { ...clone(profile.options || {}), commandsAfter: clone(profile.options?.commandsAfter || []) },
+          map: clone(profile.map || blankDraft().map),
         }
       : blankDraft(this.serverId);
     if (!draft.name) draft.name = '';
@@ -805,6 +812,211 @@ class App {
 
   draft() {
     return this.state.modal && this.state.modal.type === 'editor' ? this.state.modal.draft : null;
+  }
+
+  /** Блок «Карта»: режимы сида/размера и имена переменных шаблона. */
+  renderMapFields(draft) {
+    const map = draft.map || (draft.map = blankDraft().map);
+    const seed = map.seed;
+    const size = map.size;
+    const rerender = () => this.render();
+    const field = (label, control) =>
+      el('div', { class: 'rw-field' }, el('label', null, label), control);
+
+    const seedMode = el(
+      'select',
+      {
+        onchange: (event) => {
+          seed.mode = event.target.value;
+          rerender();
+        },
+      },
+      el('option', { value: 'keep', selected: seed.mode === 'keep' ? '' : null }, 'Не менять сид'),
+      el('option', { value: 'random', selected: seed.mode === 'random' ? '' : null }, 'Случайный при каждом вайпе'),
+      el('option', { value: 'fixed', selected: seed.mode === 'fixed' ? '' : null }, 'Фиксированный'),
+      el('option', { value: 'rotate', selected: seed.mode === 'rotate' ? '' : null }, 'По списку по очереди'),
+    );
+
+    const sizeMode = el(
+      'select',
+      {
+        onchange: (event) => {
+          size.mode = event.target.value;
+          rerender();
+        },
+      },
+      el('option', { value: 'keep', selected: size.mode === 'keep' ? '' : null }, 'Не менять размер'),
+      el('option', { value: 'fixed', selected: size.mode === 'fixed' ? '' : null }, 'Фиксированный'),
+      el('option', { value: 'random', selected: size.mode === 'random' ? '' : null }, 'Случайный из набора'),
+    );
+
+    const seedExtras = [];
+    if (seed.mode === 'fixed') {
+      seedExtras.push(
+        field(
+          'Значение сида (1…2147483647)',
+          el('input', {
+            type: 'number',
+            min: '1',
+            value: seed.value == null ? '' : String(seed.value),
+            oninput: (event) => {
+              seed.value = Number(event.target.value) || null;
+            },
+          }),
+        ),
+      );
+    }
+    if (seed.mode === 'rotate') {
+      seedExtras.push(
+        el(
+          'div',
+          { class: 'rw-field', style: { flex: '1', minWidth: '260px' } },
+          el('label', null, 'Список сидов через запятую'),
+          el(
+            'textarea',
+            {
+              placeholder: '123456789, 987654321, 555000111',
+              oninput: (event) => {
+                seed.values = event.target.value
+                  .split(/[\s,;]+/)
+                  .map((part) => Number(part))
+                  .filter((value) => Number.isInteger(value) && value >= 1 && value <= 2147483647);
+              },
+            },
+            (seed.values || []).join(', '),
+          ),
+          el('span', { class: 'rw-hint' }, 'Сид выбирается по кругу: следующий вайп берёт следующий из списка.'),
+        ),
+      );
+    }
+
+    const sizeExtras = [];
+    if (size.mode === 'fixed') {
+      sizeExtras.push(
+        field(
+          'Размер (1000…6000)',
+          el('input', {
+            type: 'number',
+            min: '1000',
+            max: '6000',
+            value: size.value == null ? '3000' : String(size.value),
+            oninput: (event) => {
+              size.value = Number(event.target.value) || null;
+            },
+          }),
+        ),
+      );
+    }
+    if (size.mode === 'random') {
+      sizeExtras.push(
+        el(
+          'div',
+          { class: 'rw-field', style: { flex: '1' } },
+          el('label', null, 'Размеры в наборе'),
+          el(
+            'div',
+            { class: 'rw-row' },
+            ...[2000, 3000, 3500, 4000, 4500, 5000, 6000].map((value) =>
+              el(
+                'button',
+                {
+                  class: `rw-btn small${(size.values || []).includes(value) ? ' primary' : ''}`,
+                  type: 'button',
+                  onclick: () => {
+                    const list = size.values || (size.values = []);
+                    const index = list.indexOf(value);
+                    if (index >= 0) list.splice(index, 1);
+                    else list.push(value);
+                    list.sort((a, b) => a - b);
+                    rerender();
+                  },
+                },
+                String(value),
+              ),
+            ),
+          ),
+        ),
+      );
+    }
+
+    return el(
+      'div',
+      { class: 'rw-field full' },
+      el('label', null, 'Карта (сид и размер)'),
+      el(
+        'div',
+        { class: 'rw-row' },
+        field('Сид', seedMode),
+        ...seedExtras,
+      ),
+      el(
+        'div',
+        { class: 'rw-row' },
+        field('Размер', sizeMode),
+        ...sizeExtras,
+      ),
+      el(
+        'div',
+        { class: 'rw-row' },
+        field(
+          'Переменная сида',
+          el('input', {
+            type: 'text',
+            value: map.vars.seed,
+            placeholder: 'WORLD_SEED',
+            oninput: (event) => {
+              map.vars.seed = event.target.value.trim();
+            },
+          }),
+        ),
+        field(
+          'Переменная размера',
+          el('input', {
+            type: 'text',
+            value: map.vars.size,
+            placeholder: 'WORLD_SIZE',
+            oninput: (event) => {
+              map.vars.size = event.target.value.trim();
+            },
+          }),
+        ),
+        el(
+          'button',
+          {
+            class: 'rw-btn small',
+            type: 'button',
+            style: { alignSelf: 'flex-end' },
+            onclick: () => this.detectMapVariables(draft),
+          },
+          'Определить из шаблона',
+        ),
+      ),
+      el(
+        'span',
+        { class: 'rw-hint' },
+        'Значения записываются в переменные шаблона перед запуском (нужно право server.startup у API-ключа). ' +
+          'Если в startup шаблона нет {{WORLD_SEED}} / {{WORLD_SIZE}} — карта не изменится.',
+      ),
+    );
+  }
+
+  async detectMapVariables(draft) {
+    try {
+      const data = await api(`${this.apiBase()}/map-variables`);
+      const detected = data?.detected || {};
+      const names = (data?.variables || []).map((item) => item.name);
+      if (detected.seed) draft.map.vars.seed = detected.seed;
+      if (detected.size) draft.map.vars.size = detected.size;
+      this.render();
+      this.toast(
+        detected.seed && detected.size ? 'ok' : 'warn',
+        names.length
+          ? `Переменные шаблона: ${names.join(', ')}`
+          : 'В шаблоне не нашлось переменных — проверьте World Seed / World Size',
+      );
+    } catch (error) {
+      this.toast('bad', error.message);
+    }
   }
 
   renderEditorModal() {
@@ -1089,6 +1301,7 @@ class App {
               'Исключение каталога защищает и всё его содержимое. Enter — добавить.',
             ),
           ),
+          this.renderMapFields(draft),
           el(
             'div',
             { class: 'rw-field full' },
@@ -1208,6 +1421,7 @@ class App {
         targets: draft.targets,
         excludes: draft.excludes,
         options: draft.options,
+        map: draft.map,
       };
       const base = this.apiBase();
       if (draft.id) await api(`${base}/profiles/${encodeURIComponent(draft.id)}`, { method: 'PUT', body: payload });
@@ -1532,7 +1746,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.1.1',
+  version: '1.2.0',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',

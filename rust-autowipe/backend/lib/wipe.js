@@ -10,6 +10,7 @@
 
 import { createPanelClient } from './api.js';
 import { deletePath, expandTargets } from './glob-walk.js';
+import { decideMapValues, normalizeMapSettings } from './mapgen.js';
 import { newId } from './store.js';
 import { nowIso, sleep } from './time.js';
 
@@ -95,12 +96,26 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
   let startAttempted = false;
   const api = createPanelClient(ctx);
 
+  // Сид/размер решаем заранее: для dry-run это «план», для боевого вайпа —
+  // значения, которые уйдут в переменные шаблона после остановки сервера.
+  const map = normalizeMapSettings(profile.map, { legacy: !profile.map });
+  const mapPlan = decideMapValues(map, profile.mapState || {});
+  const mapChanging = mapPlan.seed != null || mapPlan.size != null;
+  let appliedSeed = null;
+  let appliedSize = null;
+
   try {
     server = await loadServer(ctx, profile.serverId);
     addStep('server', true, `${server.name} · статус «${statusOf(server) || 'неизвестен'}»`);
 
     if (!server.uuid || !server.nodeId) {
       throw new Error('У сервера нет uuid/nodeId — панель не отдала данные для файловых операций');
+    }
+
+    if (mapChanging && !dry && !api.hasKey) {
+      throw new Error(
+        'Для смены сида/размера нужен API-ключ панели с правом server.startup (настройки плагина)',
+      );
     }
 
     // ── 1. Остановка ──────────────────────────────────────────────────────
@@ -134,6 +149,34 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
       });
       if (!waited.ok) throw new Error(`Сервер не остановился: ${waited.detail}`);
       addStep('stop', true, 'сервер остановлен');
+    }
+
+    // ── 1.5. Сид и размер карты ───────────────────────────────────────────
+    if (!mapChanging) {
+      addStep('map', true, 'сид и размер не меняются');
+    } else if (dry) {
+      appliedSeed = mapPlan.seed;
+      appliedSize = mapPlan.size;
+      addStep(
+        'map',
+        true,
+        `режим проверки: было бы задано ${map.vars.seed}=${mapPlan.seed ?? '—'}, ${map.vars.size}=${mapPlan.size ?? '—'}`,
+      );
+    } else {
+      const values = {};
+      if (mapPlan.seed != null) values[map.vars.seed] = String(mapPlan.seed);
+      if (mapPlan.size != null) values[map.vars.size] = String(mapPlan.size);
+      try {
+        await api.patchVariables(server.id, values);
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(
+          `Не удалось записать переменные карты (${Object.keys(values).join(', ')}): ${reason}`,
+        );
+      }
+      appliedSeed = mapPlan.seed;
+      appliedSize = mapPlan.size;
+      addStep('map', true, Object.entries(values).map(([key, value]) => `${key}=${value}`).join(', '));
     }
 
     // ── 2. Раскрытие путей ────────────────────────────────────────────────
@@ -246,6 +289,8 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
     deleted: deleted.slice(0, MAX_DELETED_RECORDED),
     skipped: skipped.slice(0, 200),
     deletedCount: deleted.length,
+    seed: appliedSeed,
+    size: appliedSize,
   };
 
   try {
@@ -263,18 +308,23 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
   }
 
   try {
-    await ctx.collection('profiles').update(
-      { id: profile.id },
-      {
-        $set: {
-          lastRunAt: run.finishedAt,
-          lastRunStatus: run.ok ? 'ok' : 'failed',
-          lastRunId: run.id,
-          lastError: errors[0] || null,
-          updatedAt: run.finishedAt,
-        },
-      },
-    );
+    const updates = {
+      lastRunAt: run.finishedAt,
+      lastRunStatus: run.ok ? 'ok' : 'failed',
+      lastRunId: run.id,
+      lastError: errors[0] || null,
+      updatedAt: run.finishedAt,
+    };
+    // Курсор ротации двигаем только когда значения реально записаны (не dry-run
+    // и PATCH прошёл), иначе следующий вайп повторит тот же сид.
+    if (!dry && (appliedSeed != null || appliedSize != null)) {
+      if (map.seed.mode === 'rotate' && appliedSeed != null) {
+        updates.mapState = { seedCursor: mapPlan.nextCursor };
+      }
+      updates.lastSeed = appliedSeed;
+      updates.lastSize = appliedSize;
+    }
+    await ctx.collection('profiles').update({ id: profile.id }, { $set: updates });
   } catch (error) {
     ctx.logger.warn(
       { error: error instanceof Error ? error.message : error },

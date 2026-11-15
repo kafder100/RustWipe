@@ -742,6 +742,242 @@ await test('слишком старый пропуск переносится б
   assert.ok(stores.get('profiles')[0].lastSkippedAt);
 });
 
+// ── Сид и размер карты ────────────────────────────────────────────────────
+await test('карта: нормализация, случайный сид, ротация и валидация', async () => {
+  const mapgen = await import('../rust-autowipe/backend/lib/mapgen.js');
+
+  const defaults = mapgen.normalizeMapSettings(null);
+  assert.equal(defaults.seed.mode, 'random');
+  assert.equal(defaults.size.mode, 'fixed');
+  assert.equal(defaults.size.value, 3000);
+  assert.equal(defaults.vars.seed, 'WORLD_SEED');
+  assert.equal(defaults.vars.size, 'WORLD_SIZE');
+
+  const legacy = mapgen.normalizeMapSettings(undefined, { legacy: true });
+  assert.equal(legacy.seed.mode, 'keep');
+  assert.equal(legacy.size.mode, 'keep');
+
+  const rotate = mapgen.normalizeMapSettings({
+    seed: { mode: 'rotate', values: [111, 222, 111, 'bad'] },
+    size: { mode: 'random', values: [2000, 6000] },
+  });
+  assert.deepEqual(rotate.seed.values, [111, 222]);
+
+  const first = mapgen.decideMapValues(rotate, { seedCursor: 0 });
+  assert.equal(first.seed, 111);
+  assert.equal(first.nextCursor, 1);
+  const second = mapgen.decideMapValues(rotate, { seedCursor: first.nextCursor });
+  assert.equal(second.seed, 222);
+  assert.equal(second.nextCursor, 0);
+
+  const random = mapgen.decideMapValues(
+    mapgen.normalizeMapSettings({
+      seed: { mode: 'random' },
+      size: { mode: 'random', values: [2000] },
+    }),
+  );
+  assert.ok(random.seed >= 1 && random.seed <= 2147483647);
+  assert.equal(random.size, 2000);
+
+  const keep = mapgen.decideMapValues(mapgen.normalizeMapSettings(undefined, { legacy: true }));
+  assert.equal(keep.seed, null);
+  assert.equal(keep.size, null);
+
+  assert.ok(mapgen.validateMapInput({ seed: { mode: 'fixed', value: 0 } }).length > 0);
+  assert.ok(mapgen.validateMapInput({ size: { mode: 'fixed', value: 9000 } }).length > 0);
+  assert.ok(mapgen.validateMapInput({ seed: { mode: 'rotate', values: [] } }).length > 0);
+  assert.ok(mapgen.validateMapInput({ size: { mode: 'random', values: [] } }).length > 0);
+  assert.ok(mapgen.validateMapInput({ vars: { seed: '1BAD' } }).length > 0);
+  assert.deepEqual(mapgen.validateMapInput({ seed: { mode: 'random' }, size: { mode: 'fixed', value: 3500 } }), []);
+});
+
+await test('карта: профиль не сохраняется с невалидным сидом', async () => {
+  const { ctx } = makeContext({
+    tunnel: makeTunnel(),
+    servers: [{ id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'user_owner', name: 'Rust', status: 'stopped' }],
+  });
+  const { buildProfile } = await import('../rust-autowipe/backend/lib/store.js');
+  const result = await buildProfile(ctx, {
+    name: 'x',
+    serverId: 'srv1',
+    targets: ['/server/*'],
+    map: { seed: { mode: 'fixed', value: 0 }, size: { mode: 'fixed', value: 3000 } },
+  });
+  assert.ok(result.errors.some((error) => error.includes('сид')));
+});
+
+await test('вайп: сид и размер уходят в переменные до удаления файлов', async () => {
+  const server = { id: 'srv1', uuid: 'uuid1', nodeId: 'node1', ownerId: 'user_owner', name: 'Rust #1', status: 'stopped' };
+  const tunnel = makeTunnel();
+  const { ctx, stores } = makeContext({
+    tunnel,
+    config: { apiKey: 'k', panelUrl: 'https://panel.test' },
+    servers: [server],
+  });
+  stores.set('runs', []);
+  stores.set('profiles', [
+    profileFixture('srv1', {
+      id: 'wipe_map',
+      options: { stopServer: true, startServer: false, dryRun: false },
+      map: {
+        seed: { mode: 'fixed', value: 123456789 },
+        size: { mode: 'fixed', value: 4000 },
+        vars: { seed: 'WORLD_SEED', size: 'WORLD_SIZE' },
+      },
+    }),
+  ]);
+
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({
+      url: String(url),
+      method: options.method || 'GET',
+      body: options.body ? JSON.parse(options.body) : undefined,
+    });
+    return { ok: true, status: 200, text: async () => JSON.stringify({ success: true }) };
+  };
+
+  const run = await executeProfileRun(ctx, stores.get('profiles')[0], { trigger: 'manual' });
+  assert.equal(run.ok, true, JSON.stringify(run.errors));
+  assert.equal(run.seed, 123456789);
+  assert.equal(run.size, 4000);
+
+  const patch = calls.find((call) => call.url.endsWith('/variables') && call.method === 'PATCH');
+  assert.ok(patch, 'не было PATCH /variables');
+  assert.deepEqual(patch.body, { WORLD_SEED: '123456789', WORLD_SIZE: '4000' });
+  assert.ok(tunnel.calls.some((call) => call.operation === 'delete'));
+});
+
+await test('вайп: ошибка записи переменных прерывает вайп и поднимает сервер', async () => {
+  const server = { id: 'srv1', uuid: 'uuid1', nodeId: 'node1', ownerId: 'user_owner', name: 'Rust #1', status: 'running' };
+  const tunnel = makeTunnel();
+  const { ctx, stores } = makeContext({
+    tunnel,
+    config: { apiKey: 'k', panelUrl: 'https://panel.test' },
+    servers: [server],
+  });
+  stores.set('runs', []);
+  stores.set('profiles', [
+    profileFixture('srv1', {
+      id: 'wipe_map_fail',
+      options: { stopServer: true, startServer: true, dryRun: false },
+      map: {
+        seed: { mode: 'fixed', value: 42 },
+        size: { mode: 'fixed', value: 3000 },
+        vars: { seed: 'WORLD_SEED', size: 'WORLD_SIZE' },
+      },
+    }),
+  ]);
+
+  globalThis.fetch = async (url, options = {}) => {
+    const href = String(url);
+    if (href.endsWith('/stop')) {
+      server.status = 'stopped';
+      return { ok: true, status: 200, text: async () => JSON.stringify({ success: true }) };
+    }
+    if (href.endsWith('/start')) {
+      server.status = 'running';
+      return { ok: true, status: 200, text: async () => JSON.stringify({ success: true }) };
+    }
+    if (href.endsWith('/variables') && options.method === 'PATCH') {
+      return {
+        ok: false,
+        status: 422,
+        text: async () =>
+          JSON.stringify({
+            error: 'Validation failed',
+            code: 'VALIDATION_ERROR',
+            fields: { WORLD_SEED: 'between:1,2147483647' },
+          }),
+      };
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ success: true }) };
+  };
+
+  const run = await executeProfileRun(ctx, stores.get('profiles')[0], { trigger: 'manual' });
+  assert.equal(run.ok, false);
+  assert.ok(run.errors.some((error) => error.includes('WORLD_SEED')));
+  assert.equal(server.status, 'running', 'сервер должен быть поднят обратно');
+  assert.equal(tunnel.calls.filter((call) => call.operation === 'delete').length, 0, 'файлы не должны удаляться');
+  assert.ok(run.steps.some((step) => step.action === 'restore-start' && step.ok));
+});
+
+await test('вайп: ротация сида двигает курсор только после записи', async () => {
+  const server = { id: 'srv1', uuid: 'uuid1', nodeId: 'node1', ownerId: 'user_owner', name: 'Rust #1', status: 'stopped' };
+  const { ctx, stores } = makeContext({
+    tunnel: makeTunnel(),
+    config: { apiKey: 'k', panelUrl: 'https://panel.test' },
+    servers: [server],
+  });
+  stores.set('runs', []);
+  stores.set('profiles', [
+    profileFixture('srv1', {
+      id: 'wipe_rotate',
+      options: { stopServer: true, startServer: false, dryRun: false },
+      map: {
+        seed: { mode: 'rotate', values: [111, 222] },
+        size: { mode: 'keep' },
+        vars: { seed: 'WORLD_SEED', size: 'WORLD_SIZE' },
+      },
+    }),
+  ]);
+
+  const patches = [];
+  globalThis.fetch = async (url, options = {}) => {
+    if (String(url).endsWith('/variables') && options.method === 'PATCH') {
+      patches.push(JSON.parse(options.body));
+    }
+    return { ok: true, status: 200, text: async () => JSON.stringify({ success: true }) };
+  };
+
+  const first = await executeProfileRun(ctx, stores.get('profiles')[0], { trigger: 'manual' });
+  assert.equal(first.seed, 111);
+  assert.equal(stores.get('profiles')[0].mapState.seedCursor, 1);
+
+  const second = await executeProfileRun(ctx, stores.get('profiles')[0], { trigger: 'manual' });
+  assert.equal(second.seed, 222);
+  assert.equal(stores.get('profiles')[0].mapState.seedCursor, 0);
+
+  const third = await executeProfileRun(ctx, stores.get('profiles')[0], { trigger: 'manual' });
+  assert.equal(third.seed, 111);
+  assert.deepEqual(patches.map((body) => body.WORLD_SEED), ['111', '222', '111']);
+});
+
+await test('dry-run не пишет переменные, но показывает план', async () => {
+  const server = { id: 'srv1', uuid: 'uuid1', nodeId: 'node1', ownerId: 'user_owner', name: 'Rust #1', status: 'running' };
+  const { ctx, stores } = makeContext({
+    tunnel: makeTunnel(),
+    config: { apiKey: 'k', panelUrl: 'https://panel.test' },
+    servers: [server],
+  });
+  stores.set('runs', []);
+  stores.set('profiles', [
+    profileFixture('srv1', {
+      id: 'wipe_dry_map',
+      options: { stopServer: true, startServer: true, dryRun: true },
+      map: {
+        seed: { mode: 'fixed', value: 777 },
+        size: { mode: 'fixed', value: 3500 },
+        vars: { seed: 'WORLD_SEED', size: 'WORLD_SIZE' },
+      },
+    }),
+  ]);
+
+  const calls = [];
+  globalThis.fetch = async (url, options = {}) => {
+    calls.push({ url: String(url), method: options.method || 'GET' });
+    return { ok: true, status: 200, text: async () => JSON.stringify({ success: true }) };
+  };
+
+  const run = await executeProfileRun(ctx, stores.get('profiles')[0], { trigger: 'manual' });
+  assert.equal(run.ok, true);
+  assert.equal(run.dryRun, true);
+  assert.equal(run.seed, 777);
+  assert.equal(run.size, 3500);
+  assert.equal(calls.filter((call) => call.url.endsWith('/variables')).length, 0);
+  assert.ok(run.steps.some((step) => step.action === 'map' && step.detail.includes('WORLD_SEED=777')));
+});
+
 if (process.exitCode) {
   console.error(`\n${passed} проверок прошло, есть ошибки`);
 } else {
