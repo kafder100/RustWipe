@@ -116,6 +116,11 @@ def main() -> None:
         help="публичный URL index.json — печатается как адрес для панели",
     )
     parser.add_argument("--skip-check", action="store_true", help="не запускать check_index.py")
+    parser.add_argument(
+        "--allow-repack",
+        action="store_true",
+        help="перезаписать уже опубликованный пакет этой версии другим содержимым",
+    )
     args = parser.parse_args()
 
     manifest = load_manifest()
@@ -138,12 +143,27 @@ def main() -> None:
 
     DIST_DIR.mkdir(parents=True, exist_ok=True)
     zip_path = DIST_DIR / f"{name}-{version}.catpkg.zip"
+    tmp_zip = DIST_DIR / f".{name}-{version}.tmp.zip"
 
-    with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+    with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
         for entry in entries:
             archive.write(PLUGIN_DIR / entry, arcname=entry)
 
-    digest = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+    digest = hashlib.sha256(tmp_zip.read_bytes()).hexdigest()
+
+    # Один и тот же URL пакета с другим содержимым ломает установку: панель
+    # сверяет sha256, а CDN raw.githubusercontent.com отдаёт закэшированные байты.
+    # Поэтому пересборку уже выпущенной версии требуем подтверждать явно.
+    if zip_path.is_file():
+        previous = hashlib.sha256(zip_path.read_bytes()).hexdigest()
+        if previous != digest and not args.allow_repack:
+            tmp_zip.unlink()
+            fail(
+                f"пакет {zip_path.name} уже собран с другим содержимым "
+                f"({previous[:12]}… → {digest[:12]}…). Поднимите version в plugin.json "
+                f"или запустите с --allow-repack"
+            )
+    tmp_zip.replace(zip_path)
     sha_path = DIST_DIR / f"{name}-{version}.catpkg.zip.sha256"
     # newline="\n" — чтобы файлы в репозитории не зависели от ОС сборки.
     sha_path.write_text(f"{digest}  {zip_path.name}\n", encoding="utf-8", newline="\n")

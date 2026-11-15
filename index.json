@@ -6,9 +6,9 @@
       "displayName": "Rust AutoWipe",
       "description": "Планировщик вайпов Rust: гибкое расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов через файловый менеджер панели, остановка и запуск сервера, история запусков.",
       "author": "H1NZON",
-      "version": "1.0.0",
-      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.0.0.catpkg.zip",
-      "sha256": "3abe56f31ad8fcb4087222fdb166eeda8577ae1d482672eb7dce09658ce28715",
+      "version": "1.0.1",
+      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.0.1.catpkg.zip",
+      "sha256": "a01d236c28dd9e1ccd50754572cf085a4da7ca3e40dc455d04b0d13749e9511c",
       "tags": [
         "rust",
         "wipe",

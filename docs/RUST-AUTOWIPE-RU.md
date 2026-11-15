@@ -5,7 +5,7 @@
 
 Проверено по документации Catalyst (релиз **v1.89.0**, ноябрь 2026) и исходникам
 `catalystctl/catalyst`. В комплекте: исходники плагина, собранный пакет
-`dist/rust-autowipe-1.0.0.catpkg.zip`, индекс маркетплейса и тесты.
+`dist/rust-autowipe-1.0.1.catpkg.zip`, индекс маркетплейса и тесты.
 
 ---
 
@@ -147,8 +147,8 @@ tools/
 .github/workflows/ci.yml           CI: тесты + проверка индекса и пакета
 
 dist/
-  rust-autowipe-1.0.0.catpkg.zip
-  rust-autowipe-1.0.0.catpkg.zip.sha256
+  rust-autowipe-1.0.1.catpkg.zip
+  rust-autowipe-1.0.1.catpkg.zip.sha256
 ```
 
 Размер пакета — ~38 КБ, зависимостей нет: backend — чистый ESM на `node:*` и `fetch`,
@@ -181,12 +181,12 @@ docker compose -f /opt/catalyst/catalyst-docker/docker-compose.yml restart backe
 Нужен HTTPS-хостинг для архива (GitHub Release, ваш CDN, nginx на том же сервере).
 
 ```bash
-SHA=$(cut -d' ' -f1 dist/rust-autowipe-1.0.0.catpkg.zip.sha256)
+SHA=$(cut -d' ' -f1 dist/rust-autowipe-1.0.1.catpkg.zip.sha256)
 
 curl -X POST https://panel.example.com/api/plugins/install \
   -H "Authorization: Bearer $CATALYST_API_KEY" \
   -H 'Content-Type: application/json' \
-  -d "{\"url\":\"https://cdn.example.com/rust-autowipe-1.0.0.catpkg.zip\",\"sha256\":\"$SHA\"}"
+  -d "{\"url\":\"https://cdn.example.com/rust-autowipe-1.0.1.catpkg.zip\",\"sha256\":\"$SHA\"}"
 ```
 
 `sha256` обязателен: панель проверяет дайджест до распаковки, без него — `CHECKSUM_REQUIRED`.

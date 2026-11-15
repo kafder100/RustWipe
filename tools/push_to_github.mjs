@@ -39,7 +39,7 @@ const DEFAULTS = {
   owner: 'kafder100',
   repo: 'RustWipe',
   branch: 'main',
-  message: 'feat: Rust AutoWipe 1.0.0 — плагин автовайпов Rust для Catalyst',
+  message: 'feat: Rust AutoWipe — автовайпы Rust для панели Catalyst',
   description:
     'Автовайпы Rust для панели Catalyst: расписание, выбор файлов и каталогов, остановка/запуск сервера',
   topics: 'rust,catalyst,game-server,wipe,scheduler,catalyst-panel',
