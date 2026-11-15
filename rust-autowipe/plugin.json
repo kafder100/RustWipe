@@ -1,0 +1,92 @@
+{
+  "name": "rust-autowipe",
+  "version": "1.0.0",
+  "displayName": "Rust AutoWipe",
+  "description": "Планировщик вайпов Rust: гибкое расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов через файловый менеджер панели, остановка и запуск сервера, история запусков.",
+  "author": "H1NZON",
+  "catalystVersion": ">=1.80.0",
+  "permissions": [
+    "server.read",
+    "files.read",
+    "files.write"
+  ],
+  "permissionDescriptions": {
+    "server.read": "Чтение списка серверов, их статуса и принадлежности к ноде — нужно для выбора сервера и ожидания остановки.",
+    "files.read": "Просмотр каталогов сервера для файлового пикера (выбор того, что удалять).",
+    "files.write": "Удаление выбранных файлов и каталогов внутри каталога игрового сервера при вайпе."
+  },
+  "userPermissions": [
+    {
+      "id": "rust-autowipe.view",
+      "label": "Rust AutoWipe: просмотр",
+      "description": "Видеть вкладку, профили вайпов, расписание и историю запусков."
+    },
+    {
+      "id": "rust-autowipe.manage",
+      "label": "Rust AutoWipe: управление",
+      "description": "Создавать, изменять и удалять профили вайпов, включая списки удаляемых путей."
+    },
+    {
+      "id": "rust-autowipe.run",
+      "label": "Rust AutoWipe: запуск",
+      "description": "Запускать вайп вручную кнопкой «Запустить сейчас»."
+    }
+  ],
+  "backend": {
+    "entry": "backend/index.js"
+  },
+  "frontend": {
+    "entry": "frontend/frontend.mjs",
+    "hasTabs": true
+  },
+  "config": {
+    "panelUrl": {
+      "type": "string",
+      "default": "",
+      "description": "Базовый URL панели для power-команд (например https://panel.example.com). Пусто = http://127.0.0.1:<PORT> внутри контейнера backend."
+    },
+    "apiKey": {
+      "type": "password",
+      "default": "",
+      "description": "API-ключ панели с правами server.start и server.stop (и console.write, если нужны команды в консоль). Создаётся в Admin → Access Control → API Keys."
+    },
+    "schedulerEnabled": {
+      "type": "boolean",
+      "default": true,
+      "description": "Включить фоновый планировщик (проверка расписания раз в минуту)."
+    },
+    "catchUpMinutes": {
+      "type": "number",
+      "default": 120,
+      "description": "Сколько минут после назначенного времени ещё допустимо запустить пропущенный вайп (например после падения панели)."
+    },
+    "stopTimeoutSec": {
+      "type": "number",
+      "default": 300,
+      "description": "Сколько секунд ждать остановки сервера перед удалением файлов."
+    },
+    "startTimeoutSec": {
+      "type": "number",
+      "default": 240,
+      "description": "Сколько секунд ждать запуска сервера после вайпа."
+    },
+    "dryRun": {
+      "type": "boolean",
+      "default": false,
+      "description": "Глобальный режим проверки: показывать, что было бы удалено, но ничего не удалять и не останавливать сервер."
+    }
+  },
+  "events": {
+    "rust-autowipe:run-completed": {
+      "payload": {
+        "runId": "string",
+        "profileId": "string",
+        "serverId": "string",
+        "ok": "boolean",
+        "deleted": "number"
+      },
+      "description": "Вайп завершён (успешно или с ошибками)."
+    }
+  },
+  "storageEngine": "dedicated"
+}

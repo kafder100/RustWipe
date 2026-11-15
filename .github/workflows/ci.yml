@@ -1,0 +1,37 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Backend logic tests
+        run: node tools/test.mjs
+
+      - name: Frontend smoke test
+        run: node tools/ui-smoke.mjs
+
+      - name: Validate plugin manifest
+        run: |
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path('rust-autowipe/plugin.json').read_text(encoding='utf-8'))
+          assert manifest['name'] == 'rust-autowipe', manifest['name']
+          assert manifest['backend']['entry'] == 'backend/index.js'
+          assert manifest['frontend']['entry'] == 'frontend/frontend.mjs'
+          assert Path('rust-autowipe', manifest['backend']['entry']).is_file()
+          assert Path('rust-autowipe', manifest['frontend']['entry']).is_file()
+          print('manifest ok:', manifest['name'], manifest['version'])
+          PY

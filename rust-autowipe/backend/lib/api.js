@@ -1,0 +1,88 @@
+/**
+ * Минимальный клиент REST API панели.
+ *
+ * Плагин не получает от хоста возможности «остановить/запустить сервер»:
+ * в контексте есть только чтение БД и файловый туннель. Поэтому power-команды
+ * идут в собственный REST API панели тем же API-ключом, который админ
+ * создаёт вручную (Admin → Access Control → API Keys).
+ */
+
+const POWER_ACTIONS = new Set(['start', 'stop', 'restart', 'kill']);
+
+/** Базовый URL панели, доступный из контейнера backend. */
+export function resolvePanelBase(ctx) {
+  const configured = String(ctx.getConfig('panelUrl') ?? '')
+    .trim()
+    .replace(/\/+$/, '');
+  if (configured) return configured;
+  const port = Number(process.env.PORT) || 3000;
+  return `http://127.0.0.1:${port}`;
+}
+
+export function createPanelClient(ctx) {
+  const base = resolvePanelBase(ctx);
+  const key = String(ctx.getConfig('apiKey') ?? '').trim();
+  const hasKey = key.length > 0;
+
+  async function call(method, path, body, { timeoutMs = 20000 } = {}) {
+    if (!hasKey) {
+      throw new Error(
+        'Не задан API-ключ панели (config.apiKey): без него нельзя останавливать и запускать сервер',
+      );
+    }
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const headers = { authorization: `Bearer ${key}` };
+      // content-type только при наличии тела: Fastify отвергает пустое тело
+      // с application/json (FST_ERR_CTP_EMPTY_JSON_BODY).
+      if (body !== undefined) headers['content-type'] = 'application/json';
+      const response = await fetch(`${base}${path}`, {
+        method,
+        headers,
+        body: body === undefined ? undefined : JSON.stringify(body),
+        signal: controller.signal,
+      });
+      const text = await response.text();
+      let json = null;
+      if (text) {
+        try {
+          json = JSON.parse(text);
+        } catch {
+          json = null;
+        }
+      }
+      if (!response.ok || (json && json.success === false)) {
+        const message =
+          json?.error || json?.message || text || `HTTP ${response.status}`;
+        throw new Error(`${method} ${path} → ${response.status}: ${String(message).slice(0, 300)}`);
+      }
+      return json;
+    } catch (error) {
+      if (error?.name === 'AbortError') {
+        throw new Error(`${method} ${path}: таймаут ${timeoutMs} мс`);
+      }
+      throw error;
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+
+  return {
+    base,
+    hasKey,
+    /** Проверка, что ключ живой и панель отвечает. */
+    ping() {
+      return call('GET', '/api/servers', undefined, { timeoutMs: 10000 });
+    },
+    power(serverId, action) {
+      if (!POWER_ACTIONS.has(action)) throw new Error(`Неизвестное действие: ${action}`);
+      return call('POST', `/api/servers/${encodeURIComponent(serverId)}/${action}`);
+    },
+    command(serverId, command) {
+      return call('POST', `/api/servers/${encodeURIComponent(serverId)}/console/command`, {
+        command,
+      });
+    },
+  };
+}

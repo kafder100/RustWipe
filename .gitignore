@@ -1,0 +1,15 @@
+# зависимости и мусор
+node_modules/
+__pycache__/
+*.pyc
+.DS_Store
+Thumbs.db
+
+# секреты локальной публикации
+.github-token
+.env
+.env.*
+
+# временные файлы сборки
+dist/*.tmp
+*.log
