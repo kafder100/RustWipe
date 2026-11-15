@@ -272,6 +272,30 @@ function ensureStyles() {
 .rw-path-btn:hover:not(:disabled){background:var(--rw-border);color:var(--rw-fg,#e5e9f0)}
 .rw-path-btn:disabled{opacity:.3;cursor:default}
 .rw-path-btn.danger:hover{color:var(--rw-danger)}
+/* Раскладка строки пути: жёсткая сетка «ручка · номер · путь · кнопки».
+   !important — чтобы перебить прежние flex-правила и стили хоста. */
+.rw-path{display:grid !important;grid-template-columns:1.1rem 1.9rem minmax(0,1fr) auto !important;
+  align-items:center !important;gap:8px !important;padding:2px 6px !important;position:relative}
+.rw-path.editing{grid-template-columns:1.1rem 1.9rem minmax(0,1fr) !important}
+.rw-path-grip{color:var(--rw-muted) !important;cursor:grab;user-select:none;text-align:center;
+  font-size:12px;line-height:1;flex:none}
+.rw-path-grip:active{cursor:grabbing}
+.rw-path-n{color:var(--rw-muted) !important;text-align:right;font-variant-numeric:tabular-nums}
+.rw-path-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+  text-align:left !important;color:var(--rw-fg,#e5e9f0) !important;flex:none !important;
+  font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
+.rw-path-actions{display:flex;align-items:center;gap:1px;justify-self:end}
+.rw-path input{min-width:0;padding:3px 7px;font-size:12px}
+.rw-path-btn{color:var(--rw-fg,#e5e9f0) !important;opacity:.78;border:none;background:transparent;
+  cursor:pointer;font-size:13px;line-height:1;padding:3px 6px;border-radius:4px;flex:none}
+.rw-path-btn:hover:not(:disabled){background:var(--rw-border);opacity:1}
+.rw-path-btn:disabled{opacity:.25;cursor:default}
+.rw-path-btn.danger:hover{color:var(--rw-danger) !important}
+.rw-path.dragging{opacity:.45}
+.rw-path.drop-above::before,.rw-path.drop-below::after{content:'';position:absolute;left:0;right:0;
+  height:2px;background:var(--rw-accent);border-radius:1px}
+.rw-path.drop-above::before{top:-1px}
+.rw-path.drop-below::after{bottom:-1px}
 .rw-row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
 .rw-modal-actions{display:flex;gap:8px;justify-content:flex-end;margin-top:14px;flex-wrap:wrap}
 .rw-notice{border:1px solid var(--rw-border);border-radius:8px;padding:8px 10px;font-size:12px;color:var(--rw-muted)}
@@ -940,6 +964,28 @@ class App {
     this.render();
   }
 
+  /** Перетаскивание: вставить строку до или после targetIndex. */
+  dropPathItem(kind, targetIndex, after) {
+    const source = this.dragPath;
+    this.dragPath = null;
+    const draft = this.draft();
+    const list = draft && draft[kind];
+    if (!source || source.kind !== kind || !Array.isArray(list)) {
+      this.render();
+      return;
+    }
+    let to = targetIndex + (after ? 1 : 0);
+    if (source.index < to) to -= 1;
+    if (to === source.index) {
+      this.render();
+      return;
+    }
+    const [item] = list.splice(source.index, 1);
+    list.splice(to, 0, item);
+    this.state.pathEdit = null;
+    this.render();
+  }
+
   removePathItem(kind, index) {
     const draft = this.draft();
     const list = draft && draft[kind];
@@ -1400,6 +1446,7 @@ class App {
             return el(
               'div',
               { class: 'rw-path editing' },
+              el('span', { class: 'rw-path-grip' }),
               el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
               el('input', {
                 type: 'text',
@@ -1418,57 +1465,90 @@ class App {
               }),
             );
           }
+          const grip = el(
+            'span',
+            {
+              class: 'rw-path-grip',
+              title: 'Перетащите мышью, чтобы изменить порядок',
+              draggable: 'true',
+              ondragstart: (event) => {
+                this.dragPath = { kind, index };
+                if (event.dataTransfer) {
+                  event.dataTransfer.effectAllowed = 'move';
+                  // Firefox без данных не начинает перетаскивание.
+                  event.dataTransfer.setData('text/plain', path);
+                }
+              },
+              ondragend: () => {
+                this.dragPath = null;
+                this.render();
+              },
+            },
+            '⠿',
+          );
+
+          const buttons = [
+            {
+              title: 'Переместить выше',
+              sign: '↑',
+              disabled: index === 0,
+              action: () => this.movePathItem(kind, index, -1),
+            },
+            {
+              title: 'Переместить ниже',
+              sign: '↓',
+              disabled: index === list.length - 1,
+              action: () => this.movePathItem(kind, index, 1),
+            },
+            { title: 'Изменить путь', sign: '✎', action: () => this.startPathEdit(kind, index) },
+            { title: 'Дублировать', sign: '⧉', action: () => this.duplicatePathItem(kind, index) },
+            { title: 'Убрать из списка', sign: '×', danger: true, action: () => this.removePathItem(kind, index) },
+          ];
+
           return el(
             'div',
-            { class: 'rw-path' },
+            {
+              class: 'rw-path',
+              'data-path-index': String(index),
+              ondragover: (event) => {
+                const drag = this.dragPath;
+                if (!drag || drag.kind !== kind) return;
+                event.preventDefault();
+                if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+                const box = event.currentTarget.getBoundingClientRect();
+                const after = event.clientY - box.top > box.height / 2;
+                event.currentTarget.classList.toggle('drop-above', !after);
+                event.currentTarget.classList.toggle('drop-below', after);
+              },
+              ondragleave: (event) => {
+                event.currentTarget.classList.remove('drop-above', 'drop-below');
+              },
+              ondrop: (event) => {
+                event.preventDefault();
+                const box = event.currentTarget.getBoundingClientRect();
+                const after = event.clientY - box.top > box.height / 2;
+                event.currentTarget.classList.remove('drop-above', 'drop-below');
+                this.dropPathItem(kind, index, after);
+              },
+            },
+            grip,
             el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
             el('span', { class: 'rw-path-text', title: path, text: path }),
             el(
-              'button',
-              {
-                class: 'rw-path-btn',
-                title: 'Переместить выше',
-                disabled: index === 0 ? '' : null,
-                onclick: () => this.movePathItem(kind, index, -1),
-              },
-              '↑',
-            ),
-            el(
-              'button',
-              {
-                class: 'rw-path-btn',
-                title: 'Переместить ниже',
-                disabled: index === list.length - 1 ? '' : null,
-                onclick: () => this.movePathItem(kind, index, 1),
-              },
-              '↓',
-            ),
-            el(
-              'button',
-              {
-                class: 'rw-path-btn',
-                title: 'Изменить путь',
-                onclick: () => this.startPathEdit(kind, index),
-              },
-              '✎',
-            ),
-            el(
-              'button',
-              {
-                class: 'rw-path-btn',
-                title: 'Дублировать',
-                onclick: () => this.duplicatePathItem(kind, index),
-              },
-              '⧉',
-            ),
-            el(
-              'button',
-              {
-                class: 'rw-path-btn danger',
-                title: 'Убрать из списка',
-                onclick: () => this.removePathItem(kind, index),
-              },
-              '×',
+              'div',
+              { class: 'rw-path-actions' },
+              ...buttons.map((button) =>
+                el(
+                  'button',
+                  {
+                    class: button.danger ? 'rw-path-btn danger' : 'rw-path-btn',
+                    title: button.title,
+                    disabled: button.disabled ? '' : null,
+                    onclick: button.action,
+                  },
+                  button.sign,
+                ),
+              ),
             ),
           );
         }),
@@ -2080,7 +2160,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.3.4',
+  version: '1.3.5',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
