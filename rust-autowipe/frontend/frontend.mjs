@@ -286,18 +286,24 @@ function ensureStyles() {
 .rw-crumbs span{color:var(--rw-muted)}
 .rw-pre{font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre-wrap;word-break:break-word;
   max-height:320px;overflow:auto;border:1px solid var(--rw-border);border-radius:8px;padding:10px;background:rgba(148,163,184,.05)}
-.rw-steps{display:flex;flex-direction:column;gap:2px;font-size:12px;margin-top:6px}
-.rw-step{border:1px solid transparent;border-radius:6px}
-.rw-step[open]{border-color:var(--rw-border);background:rgba(148,163,184,.04);padding:2px 6px 5px}
-.rw-step>summary{cursor:pointer;display:flex;gap:8px;align-items:baseline;list-style:none;padding:2px 0}
+.rw-steps{display:flex;flex-direction:column;gap:1px;font-size:12px;margin-top:6px}
+.rw-step{border-radius:5px}
+.rw-step[open]{background:rgba(148,163,184,.06)}
+.rw-step>summary{cursor:pointer;display:grid;grid-template-columns:1.7rem 6.6rem max-content max-content;gap:10px;align-items:baseline;list-style:none;padding:3px 8px;border-radius:5px}
 .rw-step>summary::-webkit-details-marker{display:none}
-.rw-step>summary:hover{color:var(--rw-accent)}
-.rw-step-body{display:flex;flex-direction:column;gap:5px;margin:2px 0 4px 16px}
-.rw-step-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:11.5px;color:var(--rw-muted);font-variant-numeric:tabular-nums}
-.rw-step-detail{font-size:12px;word-break:break-word}
-.rw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:2px 12px;font-size:12px}
+.rw-step>summary:hover{background:var(--rw-panel2)}
+.rw-step-n{color:var(--rw-muted);font-variant-numeric:tabular-nums}
+.rw-step-clock{color:var(--rw-muted);font-variant-numeric:tabular-nums}
+.rw-step-label{font-weight:600}
+.rw-step-label.bad{color:var(--rw-danger)}
+.rw-step-ms{color:var(--rw-muted);font-variant-numeric:tabular-nums;justify-self:end}
+.rw-step-body{display:flex;flex-direction:column;gap:7px;padding:2px 8px 9px 2.8rem}
+.rw-step-detail{font-size:12px;line-height:1.45;word-break:break-word}
+.rw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 14px;font-size:12px;align-items:baseline}
 .rw-kv-key{color:var(--rw-muted)}
+.rw-kv-key::after{content:':'}
 .rw-kv-val{font-variant-numeric:tabular-nums;word-break:break-word}
+.rw-step-lists{display:flex;flex-direction:column;gap:4px}
 .rw-step-paths summary{cursor:pointer;color:var(--rw-accent);font-size:12px}
 .rw-steps .rw-t{color:var(--rw-muted);font-variant-numeric:tabular-nums}
 .rw-details summary{cursor:pointer;color:var(--rw-accent);font-size:12px}
@@ -356,9 +362,27 @@ function fmtDataValue(value) {
   return String(value);
 }
 
-function shortenText(text, max) {
-  const value = String(text ?? '');
-  return value.length > max ? `${value.slice(0, max - 1)}…` : value;
+function fmtClock(iso, offsetMinutes) {
+  const raw = String(iso || '');
+  const t = Date.parse(raw);
+  if (!Number.isFinite(t)) return raw.slice(11, 19) || '—';
+  const shifted = new Date(t + (Number(offsetMinutes) || 0) * 60000).toISOString();
+  return `${shifted.slice(11, 19)}.${shifted.slice(20, 23)}`;
+}
+
+function buildKvList(data) {
+  const rows = Object.entries(data).filter(
+    ([key, value]) => key !== 'ms' && value !== null && value !== undefined && value !== '',
+  );
+  if (!rows.length) return null;
+  return el(
+    'div',
+    { class: 'rw-kv' },
+    ...rows.flatMap(([key, value]) => [
+      el('span', { class: 'rw-kv-key', text: DATA_LABELS[key] || key }),
+      el('span', { class: 'rw-kv-val', text: fmtDataValue(value) }),
+    ]),
+  );
 }
 
 function pathList(title, items) {
@@ -729,76 +753,45 @@ class App {
     );
   }
 
-  /** Один шаг вайпа: свёрнутая строка + раскрытие со статистикой. */
-  renderStep(step, index, run) {
+  /** Один шаг вайпа: сводная строка + раскрытие с полным текстом и метриками. */
+  renderStep(step, index, run, offset) {
     const ok = step.ok !== false;
     const label = STEP_LABELS[step.action] || step.action || 'шаг';
     const data = step.data && typeof step.data === 'object' ? step.data : {};
     const ms = typeof data.ms === 'number' ? data.ms : null;
 
     const head = [
-      el('span', { class: 'rw-t', text: pad2(index + 1) }),
-      el('span', { class: 'rw-t', text: (step.at || '').slice(11, 23) }),
-      el(
-        'span',
-        { style: ok ? undefined : { color: 'var(--rw-danger)' } },
-        `${ok ? '✓' : '✕'} ${label}`,
-      ),
-      step.detail ? el('span', { class: 'rw-dim', text: `— ${shortenText(step.detail, 90)}` }) : null,
-      ms !== null ? el('span', { class: 'rw-t', text: fmtDuration(ms) }) : null,
+      el('span', { class: 'rw-step-n', text: pad2(index + 1) }),
+      el('span', { class: 'rw-step-clock', text: fmtClock(step.at, offset) }),
+      el('span', { class: ok ? 'rw-step-label' : 'rw-step-label bad' }, `${ok ? '✓' : '✕'} ${label}`),
+      ms !== null ? el('span', { class: 'rw-step-ms', text: fmtDuration(ms) }) : null,
     ];
 
-    const body = [
-      el(
-        'div',
-        { class: 'rw-step-meta' },
-        el('span', null, `время: ${step.at || '—'}`),
-        ms !== null ? el('span', null, `длительность: ${fmtDuration(ms)}`) : null,
-        el('span', null, `результат: ${ok ? 'успех' : 'ошибка'}`),
-      ),
-    ];
-
-    if (step.detail) body.push(el('div', { class: 'rw-step-detail' }, step.detail));
-
-    const stats = Object.entries(data).filter(
-      ([key, value]) => key !== 'ms' && value !== null && value !== undefined && value !== '',
-    );
-    if (stats.length) {
-      body.push(
-        el(
-          'div',
-          { class: 'rw-kv' },
-          ...stats.map(([key, value]) =>
-            el(
-              'div',
-              { class: 'rw-kv-row' },
-              el('span', { class: 'rw-kv-key' }, DATA_LABELS[key] || key),
-              el('span', { class: 'rw-kv-val' }, fmtDataValue(value)),
-            ),
-          ),
-        ),
-      );
-    }
+    const body = [step.detail ? el('div', { class: 'rw-step-detail' }, step.detail) : null, buildKvList(data)];
 
     if (step.action === 'delete' && run) {
+      const lists = [];
       const deleted = Array.isArray(run.deleted) ? run.deleted : [];
-      if (deleted.length) body.push(pathList('удалённые пути', deleted));
+      if (deleted.length) lists.push(pathList('удалённые пути', deleted));
       const skipped = Array.isArray(run.skipped) ? run.skipped : [];
       if (skipped.length) {
-        body.push(
+        lists.push(
           pathList(
             'пропущенные пути',
             skipped.map((item) => `${item.path}${item.reason ? ` — ${item.reason}` : ''}`),
           ),
         );
       }
+      if (lists.length) body.push(el('div', { class: 'rw-step-lists' }, ...lists));
     }
+
+    const children = body.filter(Boolean);
 
     return el(
       'details',
       { class: 'rw-step' },
       el('summary', null, ...head),
-      el('div', { class: 'rw-step-body' }, ...body),
+      children.length ? el('div', { class: 'rw-step-body' }, ...children) : null,
     );
   }
 
@@ -831,7 +824,7 @@ class App {
             el(
               'div',
               { class: 'rw-steps' },
-              ...(run.steps || []).map((step, index) => this.renderStep(step, index, run)),
+              ...(run.steps || []).map((step, index) => this.renderStep(step, index, run, offset)),
               ...(run.errors || []).map((error) =>
                 el(
                   'div',

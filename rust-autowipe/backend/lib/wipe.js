@@ -49,7 +49,7 @@ async function waitForStatus(ctx, serverId, { accept, reject = [], timeoutMs, in
   for (;;) {
     if (accept.includes(status)) return { ok: true, status };
     if (reject.includes(status)) {
-      return { ok: false, status, detail: `сервер перешёл в статус «${status}»` };
+      return { ok: false, status, detail: `сервер перешёл в статус ${status}` };
     }
     if (Date.now() >= deadline) {
       return {
@@ -121,7 +121,7 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
 
   try {
     server = await loadServer(ctx, profile.serverId);
-    addStep('server', true, `${server.name} · статус «${statusOf(server) || 'неизвестен'}»`, {
+    addStep('server', true, `${server.name} · статус ${statusOf(server) || 'неизвестен'}`, {
       status: statusOf(server) || null,
     });
 
@@ -147,13 +147,13 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
     } else if (status === 'suspended') {
       throw new Error('Сервер приостановлен (suspended): вайп отменён');
     } else if (status === 'error' || status === 'crashed') {
-      addStep('stop', true, `сервер в статусе «${status}» — процесс уже не работает`, {
+      addStep('stop', true, `сервер в статусе ${status} — процесс уже не работает`, {
         status,
       });
     } else {
       if (!options.stopServer) {
         throw new Error(
-          `Сервер в статусе «${status}»: остановка выключена в профиле, а удалять файлы на живом сервере нельзя`,
+          `Сервер в статусе ${status}: остановка выключена в профиле, а удалять файлы на живом сервере нельзя`,
         );
       }
       if (!api.hasKey) {
@@ -281,7 +281,7 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
       });
       if (!waited.ok) throw new Error(`Сервер не запустился: ${waited.detail}`);
       stoppedByUs = false;
-      addStep('start', true, `статус «${waited.status}»`, { status: waited.status });
+      addStep('start', true, `статус ${waited.status}`, { status: waited.status });
 
       for (const command of options.commandsAfter || []) {
         try {
@@ -289,7 +289,7 @@ export async function executeProfileRun(ctx, profile, { trigger = 'manual', dryR
           addStep('command', true, command, { command });
         } catch (error) {
           warnings.push(
-            `Команда «${command}» не отправлена: ${error instanceof Error ? error.message : error}`,
+            `Команда ${command} не отправлена: ${error instanceof Error ? error.message : error}`,
           );
         }
       }
