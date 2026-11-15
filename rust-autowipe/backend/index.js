@@ -25,7 +25,13 @@ import { describeSchedule, nextOccurrence, normalizeSchedule } from './lib/sched
 import { buildProfile, publicProfile } from './lib/store.js';
 import { serverClock } from './lib/time.js';
 import { executeProfileRun } from './lib/wipe.js';
-import { sendWipeWarnings, formatWarning, getWarningState, loadWarningState } from './lib/warnings.js';
+import {
+  sendWipeWarnings,
+  formatWarning,
+  getWarningState,
+  loadWarningState,
+  recordWarningState,
+} from './lib/warnings.js';
 
 const MANAGE = 'rust-autowipe.manage';
 const RUN = 'rust-autowipe.run';
@@ -232,9 +238,27 @@ function registerRoutes(ctx) {
       try {
         await client.command(server.id, `say ${text}`);
       } catch (error) {
-        return reply.status(502).send({ success: false, error: message(error) });
+        const reason = message(error);
+        await recordWarningState(ctx, {
+          at: new Date().toISOString(),
+          ok: false,
+          error: reason,
+          serverId: server.id,
+          minutes,
+          test: true,
+        });
+        return reply.status(502).send({ success: false, error: reason });
       }
-      return { success: true, data: { text, sentAt: new Date().toISOString() } };
+      const sentAt = new Date().toISOString();
+      await recordWarningState(ctx, {
+        at: sentAt,
+        ok: true,
+        text,
+        serverId: server.id,
+        minutes,
+        test: true,
+      });
+      return { success: true, data: { text, sentAt } };
     },
     { token: RUN },
   );

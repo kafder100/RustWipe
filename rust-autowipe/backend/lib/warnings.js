@@ -39,6 +39,11 @@ async function rememberState(ctx, state) {
   }
 }
 
+/** Записать состояние отправки извне модуля (например, из тестового роута). */
+export async function recordWarningState(ctx, state) {
+  await rememberState(ctx, state);
+}
+
 /**
  * Сколько минут осталось до запуска, если мы попали в окно предупреждения.
  * Возвращает null вне окна и после начала вайпа.

@@ -2244,7 +2244,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.4.3',
+  version: '1.4.4',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
