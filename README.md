@@ -1,5 +1,8 @@
 # Rust AutoWipe
 
+[![ci](https://github.com/kafder100/RustWipe/actions/workflows/ci.yml/badge.svg)](https://github.com/kafder100/RustWipe/actions/workflows/ci.yml)
+[![release](https://img.shields.io/github/v/release/kafder100/RustWipe?display_name=tag)](https://github.com/kafder100/RustWipe/releases)
+
 Плагин автовайпов для игры **Rust** на панели **[Catalyst](https://catalystctl.com/)** (catalystctl):
 расписание вайпов, выбор каталогов и файлов для удаления, остановка/запуск сервера,
 история прогонов.
@@ -72,10 +75,21 @@ python tools/pack.py
 # 3. закоммитить dist/, index.json и plugin.json
 git add -A && git commit -m "release: rust-autowipe x.y.z"
 git push
+# 4. тег — workflow release.yml создаст GitHub Release и приложит пакет
+git tag vx.y.z && git push origin vx.y.z
 ```
 
 `pack.py` в конце запускает `check_index.py` и падает, если sha256, версия или состав
 архива разошлись. В CI тот же `check_index.py` выполняется на каждый push.
+
+Релиз можно создать и вручную, без тега:
+
+```bash
+GH_TOKEN=... node tools/release_github.mjs          # текущая версия из plugin.json
+```
+
+Скрипт идемпотентен: описание и топики репозитория обновляются, существующий релиз
+не пересоздаётся, уже загруженный ассет пропускается.
 
 Если хочется вместо raw-ссылки использовать GitHub Releases, соберите пакет с
 `--base-url https://github.com/kafder100/RustWipe/releases/download/v<версия>` и

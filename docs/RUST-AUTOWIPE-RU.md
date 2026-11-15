@@ -238,11 +238,13 @@ python tools/pack.py --base-url https://github.com/kafder100/RustWipe/releases/d
 ### 4.3a. Как выпустить обновление
 
 ```bash
-# 1) поднять version в rust-autowipe/plugin.json (например 1.0.1)
+# 1) поднять version в rust-autowipe/plugin.json (например 1.0.2)
 # 2) пересобрать пакет и индекс
 python tools/pack.py
 # 3) закоммитить и запушить
-git add -A && git commit -m "release: rust-autowipe 1.0.1" && git push
+git add -A && git commit -m "release: rust-autowipe 1.0.2" && git push
+# 4) тег — workflow release.yml создаст GitHub Release и приложит пакет
+git tag v1.0.2 && git push origin v1.0.2
 ```
 
 `pack.py` упадёт, если sha256 в индексе не совпадёт с архивом, версия разойдётся
