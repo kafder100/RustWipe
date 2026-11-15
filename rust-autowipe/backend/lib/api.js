@@ -97,14 +97,23 @@ export function createPanelClient(ctx) {
         timeoutMs: 10000,
       });
     },
-    /** Запись переменных шаблона (нужно server.startup у ключа). */
-    patchVariables(serverId, values) {
-      return call(
-        'PATCH',
-        `/api/servers/${encodeURIComponent(serverId)}/variables`,
-        values,
-        { timeoutMs: 15000 },
-      );
+    /**
+     * Запись переменных шаблона (нужно server.startup у ключа).
+     *
+     * Панель принимает только полный набор переменных: частичный PATCH отвечает
+     * 422 «This field is required» по всем остальным полям. Поэтому сначала
+     * дочитываем текущие значения и отправляем их вместе с изменениями.
+     */
+    async patchVariables(serverId, values) {
+      const path = `/api/servers/${encodeURIComponent(serverId)}/variables`;
+      const body = await call('GET', path, undefined, { timeoutMs: 10000 });
+      const items = Array.isArray(body?.data) ? body.data : [];
+      const current = {};
+      for (const item of items) {
+        if (!item || typeof item.name !== 'string') continue;
+        current[item.name] = item.value ?? item.default ?? '';
+      }
+      return call('PATCH', path, { ...current, ...values }, { timeoutMs: 15000 });
     },
   };
 }
