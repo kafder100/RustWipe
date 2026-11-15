@@ -50,10 +50,12 @@ const html = `<!doctype html>
   body{margin:0;background:#0b0f14;color:#e5e9f0;font-family:Inter,system-ui,sans-serif;padding:18px}
   .frame{width:800px;background:#141a23;border:1px solid #253040;border-radius:10px;padding:14px}
   .label{font-size:11px;letter-spacing:.08em;text-transform:uppercase;color:#8b98a9;margin-bottom:8px}
+  #metrics{font:12px ui-monospace,Menlo,monospace;color:#7ee787;margin-bottom:10px}
   ${css}
 </style></head>
 <body>
   <div class="frame">
+    <div id="metrics">измеряю…</div>
     <div class="label">Что удалять (пути и маски)</div>
     <div class="rw-root">
       <div class="rw-paths">
@@ -61,6 +63,19 @@ ${rowHtml}
       </div>
     </div>
   </div>
+  <script>
+    window.addEventListener('load', () => {
+      const row = document.querySelector('.rw-path');
+      const grip = row.querySelector('.rw-path-grip').getBoundingClientRect();
+      const n = row.querySelector('.rw-path-n').getBoundingClientRect();
+      const t = row.querySelector('.rw-path-text').getBoundingClientRect();
+      const m = document.getElementById('metrics');
+      m.textContent = 'gap grip→номер: ' + (n.left - grip.right).toFixed(1) + 'px' +
+        ' · gap номер→путь: ' + (t.left - n.right).toFixed(1) + 'px' +
+        ' · номер ширина: ' + n.width.toFixed(1) + 'px' +
+        ' · высота строки: ' + row.getBoundingClientRect().height.toFixed(1) + 'px';
+    });
+  </script>
 </body></html>`;
 
 const target = process.argv[2] || resolve(here, '../../.dsh-preview-paths.html');

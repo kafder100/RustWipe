@@ -282,7 +282,8 @@ function ensureStyles() {
 .rw-path-grip{color:var(--rw-muted) !important;cursor:grab;user-select:none;text-align:center;
   font-size:12px;line-height:1;flex:none}
 .rw-path-grip:active{cursor:grabbing}
-.rw-path-n{color:var(--rw-muted) !important;text-align:left !important;font-variant-numeric:tabular-nums}
+.rw-path-n{color:var(--rw-muted) !important;text-align:left !important;font-variant-numeric:tabular-nums;
+  min-width:0 !important;flex:none !important}
 .rw-path-text{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
   text-align:left !important;color:var(--rw-fg,#e5e9f0) !important;flex:none !important;
   font-family:ui-monospace,SFMono-Regular,Menlo,monospace}
@@ -2166,7 +2167,7 @@ function mountRoot(node, serverId) {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.3.7',
+  version: '1.3.8',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
