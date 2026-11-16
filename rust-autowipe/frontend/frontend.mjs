@@ -339,7 +339,7 @@ function ensureStyles() {
 .rw-root .rw-path{display:grid;grid-template-columns:max-content minmax(0,1fr) auto;
   align-items:center;gap:6px;padding:4px 6px;border-radius:var(--rw-r-sm);font-size:var(--rw-fs-12);position:relative}
 .rw-root .rw-path:hover{background:var(--rw-surface-3)}
-.rw-root .rw-path.editing{grid-template-columns:max-content minmax(0,1fr);background:var(--rw-surface-3)}
+.rw-root .rw-path.editing{grid-template-columns:max-content max-content minmax(0,1fr);background:var(--rw-surface-3)}
 .rw-root .rw-path-main{display:flex;align-items:baseline;gap:5px;min-width:0}
 .rw-root .rw-path-main .rw-path-text{flex:1}
 .rw-root .rw-path-grip{color:var(--rw-text-dim);cursor:grab;user-select:none;text-align:center;font-size:12px;line-height:1;flex:none}
@@ -1629,7 +1629,7 @@ class App {
             return el(
               'div',
               { class: 'rw-path editing' },
-              el('span', { class: 'rw-path-grip' }),
+              el('span', { class: 'rw-path-grip', style: { opacity: '.35' }, 'aria-hidden': 'true' }, '⠿'),
               el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
               el('input', {
                 type: 'text',
@@ -2113,8 +2113,13 @@ class App {
         el(
           'div',
           { class: 'rw-meta', style: { marginBottom: '8px' } },
-          el('span', null, `Сервер: ${data.server?.name || '—'} (${statusLabel(data.server?.status)})`),
-          el('span', null, `Найдено путей: ${data.count}`),
+          el(
+            'span',
+            null,
+            `Сервер: ${data.server?.name || profile.serverName || '—'}` +
+              (data.server?.status ? ` (${statusLabel(data.server.status)})` : ''),
+          ),
+          el('span', null, `Найдено путей: ${data.count ?? paths.length}`),
         ),
         data.truncated
           ? el('div', { class: 'rw-notice warn' }, 'Список обрезан лимитом (500 путей) — часть файлов не показана.')
@@ -2316,9 +2321,13 @@ class App {
           { class: 'rw-picker-list' },
           picker.loading
             ? el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Читаю каталог…')
-            : rows.length || upRow
-              ? [upRow, ...rows]
-              : el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Пусто'),
+            : [
+                upRow,
+                ...rows,
+                rows.length
+                  ? null
+                  : el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Пусто'),
+              ],
         ),
         el(
           'div',
@@ -2420,7 +2429,7 @@ function detectTheme() {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.5.3',
+  version: '1.5.5',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',

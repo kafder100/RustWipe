@@ -339,7 +339,7 @@ function ensureStyles() {
 .rw-root .rw-path{display:grid;grid-template-columns:max-content minmax(0,1fr) auto;
   align-items:center;gap:6px;padding:4px 6px;border-radius:var(--rw-r-sm);font-size:var(--rw-fs-12);position:relative}
 .rw-root .rw-path:hover{background:var(--rw-surface-3)}
-.rw-root .rw-path.editing{grid-template-columns:max-content minmax(0,1fr);background:var(--rw-surface-3)}
+.rw-root .rw-path.editing{grid-template-columns:max-content max-content minmax(0,1fr);background:var(--rw-surface-3)}
 .rw-root .rw-path-main{display:flex;align-items:baseline;gap:5px;min-width:0}
 .rw-root .rw-path-main .rw-path-text{flex:1}
 .rw-root .rw-path-grip{color:var(--rw-text-dim);cursor:grab;user-select:none;text-align:center;font-size:12px;line-height:1;flex:none}
@@ -604,6 +604,14 @@ class App {
         query.addEventListener('change', () => this.applyTheme());
       }
     }
+    // Панель переключает тему без перезагрузки: следим за атрибутами html.
+    if (typeof MutationObserver === 'function' && typeof document !== 'undefined' && document.documentElement) {
+      this.themeObserver = new MutationObserver(() => this.applyTheme());
+      this.themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme', 'data-mode', 'data-color-scheme'],
+      });
+    }
     this.render();
     await this.reload();
     this.clockTimer = setInterval(() => {
@@ -613,6 +621,8 @@ class App {
       }
       const chip = this.root.querySelector('[data-rw-clock]');
       if (chip && this.state.status) chip.textContent = this.panelClockText();
+      // Страховка для панелей, меняющих тему без атрибутов на html.
+      this.applyTheme();
     }, 15000);
   }
 
@@ -745,7 +755,8 @@ class App {
             class: 'rw-chip bad',
             title: `${warnState.error || 'ошибка'}${warnState.at ? ` · ${warnState.at}` : ''}`,
           },
-          'чат: ошибка предупреждения',
+          el('i', { class: 'rw-dot' }),
+          'Чат: ошибка предупреждения',
         ),
       );
     } else if (warnState && warnState.ok === true) {
@@ -756,7 +767,8 @@ class App {
             class: 'rw-chip ok',
             title: `${warnState.text || ''}${warnState.at ? ` · ${warnState.at}` : ''}`,
           },
-          'чат: ок',
+          el('i', { class: 'rw-dot' }),
+          'Чат: ок',
         ),
       );
     }
@@ -1617,7 +1629,7 @@ class App {
             return el(
               'div',
               { class: 'rw-path editing' },
-              el('span', { class: 'rw-path-grip' }),
+              el('span', { class: 'rw-path-grip', style: { opacity: '.35' }, 'aria-hidden': 'true' }, '⠿'),
               el('span', { class: 'rw-path-n', text: `${index + 1}.` }),
               el('input', {
                 type: 'text',
@@ -2101,8 +2113,13 @@ class App {
         el(
           'div',
           { class: 'rw-meta', style: { marginBottom: '8px' } },
-          el('span', null, `Сервер: ${data.server?.name || '—'} (${statusLabel(data.server?.status)})`),
-          el('span', null, `Найдено путей: ${data.count}`),
+          el(
+            'span',
+            null,
+            `Сервер: ${data.server?.name || profile.serverName || '—'}` +
+              (data.server?.status ? ` (${statusLabel(data.server.status)})` : ''),
+          ),
+          el('span', null, `Найдено путей: ${data.count ?? paths.length}`),
         ),
         data.truncated
           ? el('div', { class: 'rw-notice warn' }, 'Список обрезан лимитом (500 путей) — часть файлов не показана.')
@@ -2304,9 +2321,13 @@ class App {
           { class: 'rw-picker-list' },
           picker.loading
             ? el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Читаю каталог…')
-            : rows.length || upRow
-              ? [upRow, ...rows]
-              : el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Пусто'),
+            : [
+                upRow,
+                ...rows,
+                rows.length
+                  ? null
+                  : el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Пусто'),
+              ],
         ),
         el(
           'div',
@@ -2362,27 +2383,53 @@ function mountRoot(node, serverId) {
   void app.start();
 }
 
-/** Тема панели: color-scheme/computed, класс на html, затем системная. */
+/** Тема панели: класс на html, затем фон body, color-scheme и системная настройка. */
 function detectTheme() {
-  const root = document.documentElement;
-  let scheme = '';
-  try {
-    scheme = String(getComputedStyle(root).colorScheme || '').toLowerCase();
-  } catch {
-    scheme = '';
+  const root = typeof document !== 'undefined' && document.documentElement ? document.documentElement : null;
+
+  // 1. Явный класс темы на html — самый надёжный признак.
+  if (root && root.classList) {
+    if (root.classList.contains('dark')) return 'dark';
+    if (root.classList.contains('light')) return 'light';
   }
-  if (scheme.includes('dark') && !scheme.includes('light')) return 'dark';
-  if (scheme.includes('light') && !scheme.includes('dark')) return 'light';
-  if (root.classList.contains('dark')) return 'dark';
-  if (root.classList.contains('light')) return 'light';
-  return window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches
-    ? 'light'
-    : 'dark';
+
+  // 2. Фон body: панели часто меняют только CSS-переменные, без класса.
+  try {
+    const bg = String(getComputedStyle(document.body).backgroundColor || '');
+    const parts = bg.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?/);
+    if (parts) {
+      const [, r, g, b, a] = parts.map(Number);
+      const alpha = Number.isFinite(a) ? a : 1;
+      if (alpha > 0.5) {
+        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        return luminance > 140 ? 'light' : 'dark';
+      }
+    }
+  } catch {
+    /* фон недоступен — идём дальше */
+  }
+
+  // 3. color-scheme (может отставать от класса, поэтому после фона).
+  if (root) {
+    try {
+      const scheme = String(getComputedStyle(root).colorScheme || '').toLowerCase();
+      if (scheme.includes('dark') && !scheme.includes('light')) return 'dark';
+      if (scheme.includes('light') && !scheme.includes('dark')) return 'light';
+    } catch {
+      /* игнорируем */
+    }
+  }
+
+  // 4. Системная настройка.
+  if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
+    return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
+  }
+  return 'dark';
 }
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.4.5',
+  version: '1.5.5',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
