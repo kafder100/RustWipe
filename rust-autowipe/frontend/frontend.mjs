@@ -2372,35 +2372,44 @@ function mountRoot(node, serverId) {
   void app.start();
 }
 
-/** Тема панели: color-scheme/computed, класс на html, затем системная. */
+/** Тема панели: класс на html, затем фон body, color-scheme и системная настройка. */
 function detectTheme() {
   const root = typeof document !== 'undefined' && document.documentElement ? document.documentElement : null;
-  let scheme = '';
-  if (root) {
-    try {
-      scheme = String(getComputedStyle(root).colorScheme || '').toLowerCase();
-    } catch {
-      scheme = '';
-    }
-  }
-  if (scheme.includes('dark') && !scheme.includes('light')) return 'dark';
-  if (scheme.includes('light') && !scheme.includes('dark')) return 'light';
+
+  // 1. Явный класс темы на html — самый надёжный признак.
   if (root && root.classList) {
     if (root.classList.contains('dark')) return 'dark';
     if (root.classList.contains('light')) return 'light';
   }
-  // Панель может переключать тему только CSS-переменными — смотрим на фон body.
+
+  // 2. Фон body: панели часто меняют только CSS-переменные, без класса.
   try {
     const bg = String(getComputedStyle(document.body).backgroundColor || '');
-    const parts = bg.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    const parts = bg.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)(?:[,\s/]+([\d.]+))?/);
     if (parts) {
-      const [, r, g, b] = parts.map(Number);
-      const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      return luminance > 140 ? 'light' : 'dark';
+      const [, r, g, b, a] = parts.map(Number);
+      const alpha = Number.isFinite(a) ? a : 1;
+      if (alpha > 0.5) {
+        const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+        return luminance > 140 ? 'light' : 'dark';
+      }
     }
   } catch {
-    /* фон недоступен — идём к системной настройке */
+    /* фон недоступен — идём дальше */
   }
+
+  // 3. color-scheme (может отставать от класса, поэтому после фона).
+  if (root) {
+    try {
+      const scheme = String(getComputedStyle(root).colorScheme || '').toLowerCase();
+      if (scheme.includes('dark') && !scheme.includes('light')) return 'dark';
+      if (scheme.includes('light') && !scheme.includes('dark')) return 'light';
+    } catch {
+      /* игнорируем */
+    }
+  }
+
+  // 4. Системная настройка.
   if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   }
@@ -2409,7 +2418,7 @@ function detectTheme() {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.5.1',
+  version: '1.5.2',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
