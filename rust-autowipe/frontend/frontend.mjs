@@ -604,6 +604,14 @@ class App {
         query.addEventListener('change', () => this.applyTheme());
       }
     }
+    // Панель переключает тему без перезагрузки: следим за атрибутами html.
+    if (typeof MutationObserver === 'function' && typeof document !== 'undefined' && document.documentElement) {
+      this.themeObserver = new MutationObserver(() => this.applyTheme());
+      this.themeObserver.observe(document.documentElement, {
+        attributes: true,
+        attributeFilter: ['class', 'style', 'data-theme', 'data-mode', 'data-color-scheme'],
+      });
+    }
     this.render();
     await this.reload();
     this.clockTimer = setInterval(() => {
@@ -613,6 +621,8 @@ class App {
       }
       const chip = this.root.querySelector('[data-rw-clock]');
       if (chip && this.state.status) chip.textContent = this.panelClockText();
+      // Страховка для панелей, меняющих тему без атрибутов на html.
+      this.applyTheme();
     }, 15000);
   }
 
@@ -2379,6 +2389,18 @@ function detectTheme() {
     if (root.classList.contains('dark')) return 'dark';
     if (root.classList.contains('light')) return 'light';
   }
+  // Панель может переключать тему только CSS-переменными — смотрим на фон body.
+  try {
+    const bg = String(getComputedStyle(document.body).backgroundColor || '');
+    const parts = bg.match(/rgba?\((\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    if (parts) {
+      const [, r, g, b] = parts.map(Number);
+      const luminance = 0.2126 * r + 0.7152 * g + 0.0722 * b;
+      return luminance > 140 ? 'light' : 'dark';
+    }
+  } catch {
+    /* фон недоступен — идём к системной настройке */
+  }
   if (typeof window !== 'undefined' && typeof window.matchMedia === 'function') {
     return window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   }
@@ -2387,7 +2409,7 @@ function detectTheme() {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.5.0',
+  version: '1.5.1',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
