@@ -235,8 +235,10 @@ function registerRoutes(ctx) {
         ctx.getConfig('wipeWarningText') ?? 'Вайп сервера через {minutes} мин',
       );
       const text = formatWarning(template, Number.isFinite(minutes) && minutes > 0 ? minutes : 5);
+      // Тест помечается явно: иначе игроки (и вы) принимают его за реальный отсчёт.
+      const line = `[тест] ${text}`;
       try {
-        await client.command(server.id, `say ${text}`);
+        await client.command(server.id, `say ${line}`);
       } catch (error) {
         const reason = message(error);
         await recordWarningState(ctx, {
@@ -253,12 +255,12 @@ function registerRoutes(ctx) {
       await recordWarningState(ctx, {
         at: sentAt,
         ok: true,
-        text,
+        text: line,
         serverId: server.id,
         minutes,
         test: true,
       });
-      return { success: true, data: { text, sentAt } };
+      return { success: true, data: { text: line, sentAt } };
     },
     { token: RUN },
   );
