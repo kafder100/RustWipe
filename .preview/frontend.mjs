@@ -389,28 +389,40 @@ function ensureStyles() {
   padding:10px;background:var(--rw-surface-2);color:var(--rw-text)}
 
 /* ── Шаги истории ──────────────────────────────────────────────────── */
-.rw-root .rw-steps{display:flex;flex-direction:column;gap:1px;font-size:var(--rw-fs-12);margin-top:6px;color:var(--rw-text)}
-.rw-root .rw-step{border-radius:var(--rw-r-sm)}
-.rw-root .rw-step[open]{background:var(--rw-surface-2)}
-.rw-root .rw-step>summary{cursor:pointer;display:grid;grid-template-columns:1.7rem 6.6rem 1rem max-content 1fr;
-  gap:var(--rw-space-2);align-items:baseline;list-style:none;padding:4px var(--rw-space-2);
-  border-radius:var(--rw-r-sm);color:var(--rw-text)}
+.rw-root .rw-steps{display:flex;flex-direction:column;gap:2px;font-size:var(--rw-fs-13);margin-top:var(--rw-space-2);color:var(--rw-text)}
+.rw-root .rw-step{border-radius:var(--rw-r-sm);border:1px solid transparent}
+.rw-root .rw-step[open]{background:var(--rw-surface-2);border-color:var(--rw-border)}
+.rw-root .rw-step>summary{cursor:pointer;display:grid;
+  grid-template-columns:2.1rem 6.8rem 1rem max-content minmax(0,1fr) auto;
+  gap:var(--rw-space-2);align-items:center;list-style:none;
+  padding:6px var(--rw-space-2);border-radius:var(--rw-r-sm);color:var(--rw-text)}
 .rw-root .rw-step>summary::-webkit-details-marker{display:none}
 .rw-root .rw-step>summary:hover{background:var(--rw-surface-3)}
-.rw-root .rw-step-n,.rw-root .rw-step-clock,.rw-root .rw-step-ms{color:var(--rw-text-dim);font-variant-numeric:tabular-nums}
-.rw-root .rw-step-ms{justify-self:end}
+.rw-root .rw-step-n{justify-self:start;min-width:1.9rem;text-align:center;font-family:var(--rw-mono);
+  font-size:var(--rw-fs-11);color:var(--rw-text-dim);background:var(--rw-surface-3);
+  border-radius:4px;padding:2px 4px;font-variant-numeric:tabular-nums}
+.rw-root .rw-step-clock{font-family:var(--rw-mono);font-size:var(--rw-fs-12);
+  color:var(--rw-text-dim);font-variant-numeric:tabular-nums}
 .rw-root .rw-step-ok{color:var(--rw-ok);font-weight:700}
 .rw-root .rw-step-bad{color:var(--rw-danger);font-weight:700}
-.rw-root .rw-step-label{color:var(--rw-text);font-weight:600}
+.rw-root .rw-step-label{color:var(--rw-text);font-weight:600;white-space:nowrap}
 .rw-root .rw-step-label.bad{color:var(--rw-danger)}
-.rw-root .rw-step-body{display:flex;flex-direction:column;gap:7px;padding:2px var(--rw-space-2) 10px 2.8rem}
-.rw-root .rw-step-detail{font-size:var(--rw-fs-12);line-height:1.45;word-break:break-word;color:var(--rw-text)}
-.rw-root .rw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:3px 14px;
+.rw-root .rw-step-hint{color:var(--rw-text-dim);font-size:var(--rw-fs-12);min-width:0;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+/* В раскрытом шаге полный текст уже есть в теле — подсказку убираем. */
+.rw-root .rw-step[open] .rw-step-hint{display:none}
+.rw-root .rw-step-ms{justify-self:end;font-family:var(--rw-mono);font-size:var(--rw-fs-12);
+  color:var(--rw-text-dim);font-variant-numeric:tabular-nums;white-space:nowrap}
+.rw-root .rw-step-body{display:flex;flex-direction:column;gap:var(--rw-space-3);
+  padding:var(--rw-space-1) var(--rw-space-2) var(--rw-space-3) calc(2.1rem + var(--rw-space-2))}
+.rw-root .rw-step-detail{font-size:var(--rw-fs-12);line-height:1.55;word-break:break-word;color:var(--rw-text)}
+.rw-root .rw-kv{display:grid;grid-template-columns:max-content minmax(0,1fr);gap:6px 20px;
+  border-top:1px solid var(--rw-border);padding-top:var(--rw-space-2);
   font-size:var(--rw-fs-12);align-items:baseline}
 .rw-root .rw-kv-key{color:var(--rw-text-dim)}
 .rw-root .rw-kv-key::after{content:':'}
 .rw-root .rw-kv-val{font-variant-numeric:tabular-nums;word-break:break-word;color:var(--rw-text)}
-.rw-root .rw-step-lists{display:flex;flex-direction:column;gap:4px}
+.rw-root .rw-step-lists{display:flex;flex-direction:column;gap:var(--rw-space-1)}
 .rw-root .rw-step-paths summary{cursor:pointer;color:var(--rw-primary);font-size:var(--rw-fs-12)}
 .rw-root .rw-details summary{cursor:pointer;color:var(--rw-primary);font-size:var(--rw-fs-12)}
 .rw-root .rw-inline{display:inline-flex;align-items:center;gap:6px}
@@ -429,8 +441,9 @@ function ensureStyles() {
   .rw-root .rw-card-head{flex-wrap:wrap}
   .rw-root .rw-card h4{white-space:normal}
   .rw-root .rw-actions .rw-btn{flex:1 1 auto}
-  .rw-root .rw-step>summary{grid-template-columns:1.4rem 4.6rem 1rem 1fr;row-gap:2px}
-  .rw-root .rw-step-ms{grid-column:1/-1;justify-self:start;padding-left:1.4rem}
+  .rw-root .rw-step>summary{grid-template-columns:1.9rem 4.6rem 1rem minmax(0,max-content) auto;row-gap:2px}
+  .rw-root .rw-step-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
+  .rw-root .rw-step-hint{display:none}
   .rw-root .rw-step-body{padding-left:var(--rw-space-2)}
   .rw-root .rw-overlay{padding:0}
   .rw-root .rw-modal,.rw-root .rw-modal.wide{width:100%;max-height:100dvh;min-height:100dvh;
@@ -446,6 +459,18 @@ function ensureStyles() {
   .rw-root .rw-path-actions{gap:0}
 }
 
+@media (max-width:480px){
+  /* На телефоне время шага переносим под подпись, чтобы она не сжималась. */
+  .rw-root .rw-step>summary{
+    grid-template-columns:1.9rem 1rem minmax(0,1fr) auto;
+    grid-template-areas:"n s l m" ". . t .";
+    row-gap:2px;align-items:center}
+  .rw-root .rw-step-n{grid-area:n}
+  .rw-root .rw-step-ok,.rw-root .rw-step-bad{grid-area:s}
+  .rw-root .rw-step-label{grid-area:l;white-space:normal;overflow:visible}
+  .rw-root .rw-step-ms{grid-area:m}
+  .rw-root .rw-step-clock{grid-area:t;justify-self:start;font-size:var(--rw-fs-11)}
+}
 @media (prefers-reduced-motion:reduce){
   .rw-root *{transition:none !important}
 }
@@ -467,33 +492,40 @@ function ensureStyles() {
 // ── Шаги вайпа: подписи и форматирование ──────────────────────────────────
 
 const STEP_LABELS = {
-  server: 'сервер',
-  stop: 'остановка',
-  map: 'сид и размер',
-  expand: 'поиск путей',
-  delete: 'удаление',
-  start: 'запуск',
-  command: 'команда в консоль',
-  error: 'ошибка',
-  'restore-start': 'восстановление запуска',
+  server: 'Сервер',
+  stop: 'Остановка',
+  map: 'Сид и размер',
+  expand: 'Поиск путей',
+  delete: 'Удаление',
+  start: 'Запуск',
+  command: 'Команда в консоль',
+  error: 'Ошибка',
+  'restore-start': 'Восстановление запуска',
 };
 
 const DATA_LABELS = {
-  status: 'статус',
-  changed: 'изменено',
-  seed: 'сид',
-  size: 'размер',
-  paths: 'найдено путей',
-  truncated: 'список обрезан',
-  deleted: 'удалено',
-  skipped: 'пропущено',
-  errors: 'ошибок',
-  dryRun: 'режим проверки',
-  started: 'запуск',
-  timeoutSec: 'таймаут, с',
-  command: 'команда',
-  message: 'сообщение',
+  status: 'Статус',
+  changed: 'Изменено',
+  seed: 'Сид',
+  size: 'Размер',
+  paths: 'Найдено путей',
+  truncated: 'Список обрезан',
+  deleted: 'Удалено',
+  skipped: 'Пропущено',
+  errors: 'Ошибок',
+  dryRun: 'Режим проверки',
+  started: 'Запуск',
+  timeoutSec: 'Таймаут, с',
+  command: 'Команда',
+  message: 'Сообщение',
 };
+
+/** Первая буква заглавная — тексты шагов приходят из бэкенда строчными. */
+function sentence(text) {
+  const value = String(text ?? '').trim();
+  if (!value) return '';
+  return value.charAt(0).toUpperCase() + value.slice(1);
+}
 
 function fmtDuration(ms) {
   if (!Number.isFinite(ms)) return '—';
@@ -985,26 +1017,28 @@ class App {
     const data = step.data && typeof step.data === 'object' ? step.data : {};
     const ms = typeof data.ms === 'number' ? data.ms : null;
 
+    const detailText = sentence(step.detail);
     const head = [
       el('span', { class: 'rw-step-n', text: pad2(index + 1) }),
       el('span', { class: 'rw-step-clock', text: fmtClock(step.at, offset) }),
       el('span', { class: ok ? 'rw-step-ok' : 'rw-step-bad', text: ok ? '✓' : '✕' }),
       el('span', { class: ok ? 'rw-step-label' : 'rw-step-label bad' }, label),
+      detailText ? el('span', { class: 'rw-step-hint', title: detailText, text: detailText }) : null,
       ms !== null ? el('span', { class: 'rw-step-ms', text: fmtDuration(ms) }) : null,
     ];
 
-    const body = [step.detail ? el('div', { class: 'rw-step-detail' }, step.detail) : null, buildKvList(data)];
+    const body = [detailText ? el('div', { class: 'rw-step-detail' }, detailText) : null, buildKvList(data)];
 
     if (step.action === 'delete' && run) {
       const lists = [];
       const deleted = Array.isArray(run.deleted) ? run.deleted : [];
-      if (deleted.length) lists.push(pathList('удалённые пути', deleted));
+      if (deleted.length) lists.push(pathList('Удалённые пути', deleted));
       const skipped = Array.isArray(run.skipped) ? run.skipped : [];
       if (skipped.length) {
         lists.push(
           pathList(
-            'пропущенные пути',
-            skipped.map((item) => `${item.path}${item.reason ? ` — ${item.reason}` : ''}`),
+            'Пропущенные пути',
+            skipped.map((item) => `${item.path}${item.reason ? ` — ${sentence(item.reason)}` : ''}`),
           ),
         );
       }
