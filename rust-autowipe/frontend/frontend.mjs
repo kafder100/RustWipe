@@ -755,7 +755,8 @@ class App {
             class: 'rw-chip bad',
             title: `${warnState.error || 'ошибка'}${warnState.at ? ` · ${warnState.at}` : ''}`,
           },
-          'чат: ошибка предупреждения',
+          el('i', { class: 'rw-dot' }),
+          'Чат: ошибка предупреждения',
         ),
       );
     } else if (warnState && warnState.ok === true) {
@@ -766,7 +767,8 @@ class App {
             class: 'rw-chip ok',
             title: `${warnState.text || ''}${warnState.at ? ` · ${warnState.at}` : ''}`,
           },
-          'чат: ок',
+          el('i', { class: 'rw-dot' }),
+          'Чат: ок',
         ),
       );
     }
@@ -2418,7 +2420,7 @@ function detectTheme() {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.5.2',
+  version: '1.5.3',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
