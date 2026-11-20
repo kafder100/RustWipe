@@ -11,15 +11,28 @@
  *
  * Точные имена файлов зависят от версии Rust (protocol-суффикс), поэтому
  * везде используются маски, а не фиксированные имена.
+ *
+ * Запасные копии сохранения (.sav.1, .sav.2 … — их число задаёт
+ * server.savebackupcount) относятся к старому миру и удаляются вместе с ним.
+ * Маски «.sav.?» и «.sav.??» берут только номера 1–99: ручная копия вроде
+ * «.sav.bak» остаётся. У баз .db удаляются и их файлы -wal и -shm.
  */
+
+/** Сохранение мира вместе с запасными копиями. */
+const WORLD_SAVE = [
+  '/server/*/proceduralmap.*.map',
+  '/server/*/proceduralmap.*.sav',
+  '/server/*/proceduralmap.*.sav.?',
+  '/server/*/proceduralmap.*.sav.??',
+];
 
 export const PRESETS = [
   {
     id: 'rust-map',
     label: 'Карта (map wipe)',
     description:
-      'Удаляет сохранение мира. Блюпринты и данные игроков остаются. Подходит для еженедельного вайпа карты.',
-    targets: ['/server/*/proceduralmap.*.map', '/server/*/proceduralmap.*.sav'],
+      'Удаляет сохранение мира вместе с его запасными копиями. Блюпринты и данные игроков остаются. Подходит для еженедельного вайпа карты.',
+    targets: [...WORLD_SAVE],
     excludes: [],
   },
   {
@@ -28,9 +41,10 @@ export const PRESETS = [
     description:
       'Вайп мира и чертежей. Самый частый вариант для месячного вайпа: карта новая, прогресс игроков сброшен.',
     targets: [
-      '/server/*/proceduralmap.*.map',
-      '/server/*/proceduralmap.*.sav',
+      ...WORLD_SAVE,
       '/server/*/player.blueprints.*.db',
+      '/server/*/player.blueprints.*.db-wal',
+      '/server/*/player.blueprints.*.db-shm',
     ],
     excludes: [],
   },
@@ -39,7 +53,7 @@ export const PRESETS = [
     label: 'Данные игроков',
     description:
       'Удаляет файлы игроков (блюпринты, смерти, состояния), не трогая карту. Используйте вместе с вайпом карты.',
-    targets: ['/server/*/player.*.db'],
+    targets: ['/server/*/player.*.db', '/server/*/player.*.db-wal', '/server/*/player.*.db-shm'],
     excludes: ['/server/*/cfg'],
   },
   {

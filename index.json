@@ -4,11 +4,11 @@
     {
       "name": "rust-autowipe",
       "displayName": "Rust AutoWipe",
-      "description": "Автовайпы Rust для конкретного сервера: вкладка у серверов с шаблоном Rust, расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов с управлением списком, ротация сида и размера карты (WORLD_SEED / WORLD_SIZE), предупреждения в чате за 5 минут до вайпа, остановка и запуск сервера, история запусков с раскрытием по шагам.",
+      "description": "Автовайпы Rust для конкретного сервера: вкладка у серверов с шаблоном Rust, расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов с управлением списком, ротация сида и размера карты (WORLD_SEED / WORLD_SIZE), предупреждения в чате за несколько минут до вайпа (настройка), остановка и запуск сервера, история запусков с раскрытием по шагам.",
       "author": "H1NZON",
-      "version": "1.5.6",
-      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.5.6.catpkg.zip",
-      "sha256": "e50fe3d2345f338b2883317d400d785eb3d0f54c0f0a2e597aa3debad0615c7b",
+      "version": "1.6.0",
+      "downloadUrl": "https://raw.githubusercontent.com/kafder100/RustWipe/main/dist/rust-autowipe-1.6.0.catpkg.zip",
+      "sha256": "5e404544773926cf611475059982fbd60a6270c100a710aa2c0f2baf2783dded",
       "tags": [
         "rust",
         "wipe",

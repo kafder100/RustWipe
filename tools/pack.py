@@ -11,6 +11,14 @@
     index.json                      (корень репозитория — его и добавляют в панель)
 
 После сборки запускает tools/check_index.py, чтобы индекс и пакет не разъехались.
+
+Сборка воспроизводимая: файлы идут в архив в одном и том же порядке,
+у всех записей одна и та же дата (1980-01-01) и одни и те же права (rw-r--r--),
+поэтому одинаковые исходники дают одинаковый архив, когда бы их ни взяли.
+Сжатие зависит от библиотеки zlib: другой Python (например, в CI) может сжать
+те же файлы чуть иначе. Поэтому уже собранный пакет этой версии сравнивается
+по содержимому: если файлы внутри те же — пакет остаётся как есть и sha256
+не меняется; если другие — сборка останавливается (см. --allow-repack).
 """
 
 from __future__ import annotations
@@ -38,6 +46,12 @@ DEFAULT_INDEX_URL = "https://raw.githubusercontent.com/kafder100/RustWipe/main/i
 ALLOWED_TOP_LEVEL = {"plugin.json", "README.md", "LICENSE", "backend", "frontend", "assets"}
 FORBIDDEN_NAMES = {".DS_Store", "Thumbs.db"}
 FORBIDDEN_PARTS = {"__pycache__", "node_modules", ".git", ".cache", "src", "dist", "tools"}
+
+# Постоянные свойства записей архива — чтобы сборка не зависела от дат файлов
+# на диске, от прав доступа и от системы, где собирали.
+ENTRY_DATE = (1980, 1, 1, 0, 0, 0)  # самая ранняя дата, которую хранит zip
+ENTRY_MODE = 0o100644  # обычный файл, rw-r--r--
+ENTRY_SYSTEM = 3  # «Unix»: права выше записаны в формате Unix
 
 
 def fail(message: str) -> None:
@@ -103,6 +117,26 @@ def verify_entries(entries: list[str], manifest: dict) -> None:
         fail("у плагина есть frontend, но frontend/frontend.mjs не попал в пакет")
 
 
+def write_archive(path: Path, entries: list[str]) -> None:
+    """Записать архив: записи по порядку entries, с постоянной датой и правами."""
+    with zipfile.ZipFile(path, "w") as archive:
+        for entry in entries:
+            info = zipfile.ZipInfo(entry, date_time=ENTRY_DATE)
+            info.compress_type = zipfile.ZIP_DEFLATED
+            info.create_system = ENTRY_SYSTEM
+            info.external_attr = ENTRY_MODE << 16
+            archive.writestr(info, (PLUGIN_DIR / entry).read_bytes(), compresslevel=9)
+
+
+def archive_files(path: Path) -> dict[str, bytes] | None:
+    """Файлы внутри архива: имя → содержимое. None — если это не zip."""
+    try:
+        with zipfile.ZipFile(path) as archive:
+            return {info.filename: archive.read(info) for info in archive.infolist() if not info.is_dir()}
+    except (zipfile.BadZipFile, OSError):
+        return None
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="Собрать .catpkg.zip и индекс Catalyst")
     parser.add_argument(
@@ -145,25 +179,37 @@ def main() -> None:
     zip_path = DIST_DIR / f"{name}-{version}.catpkg.zip"
     tmp_zip = DIST_DIR / f".{name}-{version}.tmp.zip"
 
-    with zipfile.ZipFile(tmp_zip, "w", compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
-        for entry in entries:
-            archive.write(PLUGIN_DIR / entry, arcname=entry)
+    write_archive(tmp_zip, entries)
 
     digest = hashlib.sha256(tmp_zip.read_bytes()).hexdigest()
 
     # Один и тот же URL пакета с другим содержимым ломает установку: панель
     # сверяет sha256, а CDN raw.githubusercontent.com отдаёт закэшированные байты.
     # Поэтому пересборку уже выпущенной версии требуем подтверждать явно.
+    keep_previous = False
     if zip_path.is_file():
         previous = hashlib.sha256(zip_path.read_bytes()).hexdigest()
-        if previous != digest and not args.allow_repack:
-            tmp_zip.unlink()
-            fail(
-                f"пакет {zip_path.name} уже собран с другим содержимым "
-                f"({previous[:12]}… → {digest[:12]}…). Поднимите version в plugin.json "
-                f"или запустите с --allow-repack"
-            )
-    tmp_zip.replace(zip_path)
+        if previous != digest:
+            if archive_files(zip_path) == archive_files(tmp_zip):
+                # Внутри те же файлы, а байты архива другие (другая дата или
+                # другой zlib). Опубликованный пакет и его sha256 не трогаем.
+                keep_previous = True
+                print(
+                    f"Пакет {zip_path.name} уже собран из тех же файлов — оставлен как есть "
+                    f"(sha256 {previous[:12]}… не меняется)"
+                )
+            elif not args.allow_repack:
+                tmp_zip.unlink()
+                fail(
+                    f"пакет {zip_path.name} уже собран с другим содержимым "
+                    f"({previous[:12]}… → {digest[:12]}…). Поднимите version в plugin.json "
+                    f"или запустите с --allow-repack"
+                )
+    if keep_previous:
+        tmp_zip.unlink()
+        digest = previous
+    else:
+        tmp_zip.replace(zip_path)
     sha_path = DIST_DIR / f"{name}-{version}.catpkg.zip.sha256"
     # newline="\n" — чтобы файлы в репозитории не зависели от ОС сборки.
     sha_path.write_text(f"{digest}  {zip_path.name}\n", encoding="utf-8", newline="\n")

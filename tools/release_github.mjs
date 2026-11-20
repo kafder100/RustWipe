@@ -10,8 +10,14 @@
  *   node tools/release_github.mjs --no-meta       # не трогать описание/топики
  *   node tools/release_github.mjs --no-release    # только метаданные
  *
- * Скрипт идемпотентен: существующий релиз не пересоздаётся, уже загруженный
- * ассет с тем же именем пропускается.
+ * Скрипт идемпотентен: существующий релиз не пересоздаётся, а уже загруженный
+ * ассет с тем же именем не заменяется — он сверяется по sha256 с локальным
+ * пакетом, и другой файл — ошибка (поднимите версию).
+ *
+ * Выпуск — только из коммита на GitHub, где index.json ведёт ровно на этот
+ * пакет (та же версия и sha256). Если метки ещё нет, это текущий коммит main
+ * на GitHub, и метка ставится именно на него (по SHA). Если локальный коммит
+ * выпуска ещё не отправлен в main, скрипт останавливается.
  */
 
 import fs from 'node:fs';
@@ -108,6 +114,49 @@ async function api(token, method, endpoint, body, { upload = false, contentType 
   return json;
 }
 
+/** Скачать файл через API (ассет выпуска) — байты. */
+async function download(token, endpoint) {
+  const response = await fetch(`${API}${endpoint}`, {
+    headers: {
+      authorization: `Bearer ${token}`,
+      accept: 'application/octet-stream',
+      'x-github-api-version': '2022-11-28',
+      'user-agent': 'rust-autowipe-release',
+    },
+  });
+  if (!response.ok) {
+    const error = new Error(`GET ${endpoint} → ${response.status}`);
+    error.status = response.status;
+    throw error;
+  }
+  return Buffer.from(await response.arrayBuffer());
+}
+
+/** Коммит, на который указывает метка на GitHub, или null, если метки нет. */
+async function tagCommit(token, tag) {
+  let ref;
+  try {
+    ref = await api(token, 'GET', `/repos/${OWNER}/${REPO}/git/ref/tags/${encodeURIComponent(tag)}`);
+  } catch (error) {
+    if (error.status === 404) return null;
+    throw error;
+  }
+  let object = ref.object;
+  // Аннотированная метка указывает на объект метки, а он — на коммит.
+  while (object && object.type === 'tag') {
+    object = (await api(token, 'GET', `/repos/${OWNER}/${REPO}/git/tags/${object.sha}`)).object;
+  }
+  return object?.sha || null;
+}
+
+/** Запись плагина в index.json этого коммита на GitHub (или null). */
+async function indexEntry(token, commit, name) {
+  const file = await api(token, 'GET', `/repos/${OWNER}/${REPO}/contents/index.json?ref=${commit}`);
+  const index = JSON.parse(Buffer.from(file.content || '', 'base64').toString('utf8'));
+  const entries = Array.isArray(index) ? index : index.plugins || [];
+  return entries.find((entry) => entry && entry.name === name) || null;
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const token = readToken();
@@ -140,6 +189,22 @@ async function main() {
 
   if (!args.release) return;
 
+  // Какой коммит станет выпуском: тот, где уже стоит метка, или текущий main
+  // на GitHub. Его index.json должен вести ровно на этот пакет.
+  const taggedCommit = await tagCommit(token, tag);
+  const target = taggedCommit || (await api(token, 'GET', `/repos/${OWNER}/${REPO}/git/ref/heads/main`)).object.sha;
+  const entry = await indexEntry(token, target, manifest.name);
+  if (!entry || entry.version !== version || entry.sha256 !== sha256) {
+    const where = taggedCommit ? `Метка ${tag} на GitHub стоит на коммите` : 'Ветка main на GitHub — коммит';
+    throw new Error(
+      `${where} ${target.slice(0, 7)}, а в его index.json версия ${entry?.version ?? '—'} ` +
+        `и sha256 ${String(entry?.sha256 ?? '—').slice(0, 12)}…; локальный пакет — ${version}, ${sha256.slice(0, 12)}…. ` +
+        (taggedCommit
+          ? 'Выпуск не создан: метка стоит не на коммите этого пакета'
+          : 'Выпуск не создан: сначала отправьте коммит выпуска в main'),
+    );
+  }
+
   let release = null;
   try {
     release = await api(token, 'GET', `/repos/${OWNER}/${REPO}/releases/tags/${tag}`);
@@ -164,7 +229,8 @@ async function main() {
 
     release = await api(token, 'POST', `/repos/${OWNER}/${REPO}/releases`, {
       tag_name: tag,
-      target_commitish: 'main',
+      // Метка — на проверенный выше коммит (по SHA), а не на «текущую вершину main».
+      target_commitish: target,
       name: `Rust AutoWipe ${version}`,
       body,
       draft: false,
@@ -176,7 +242,16 @@ async function main() {
   const assets = await api(token, 'GET', `/repos/${OWNER}/${REPO}/releases/${release.id}/assets`);
   const existing = assets.find((asset) => asset.name === pkgName);
   if (existing) {
-    console.log(`Ассет уже загружен: ${existing.browser_download_url} (${existing.size} байт)`);
+    // Опубликованный файл не заменяется: только сверяется с локальным пакетом.
+    const published = await download(token, `/repos/${OWNER}/${REPO}/releases/assets/${existing.id}`);
+    const publishedSha = crypto.createHash('sha256').update(published).digest('hex');
+    if (publishedSha !== sha256) {
+      throw new Error(
+        `В выпуске ${tag} уже есть другой ${pkgName} (sha256 ${publishedSha.slice(0, 12)}…, ` +
+          `локально ${sha256.slice(0, 12)}…). Опубликованный файл не меняется: поднимите версию`,
+      );
+    }
+    console.log(`Ассет уже загружен и совпадает: ${existing.browser_download_url} (${existing.size} байт)`);
   } else {
     const asset = await api(
       token,

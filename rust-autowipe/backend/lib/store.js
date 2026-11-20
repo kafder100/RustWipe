@@ -2,9 +2,9 @@
  * Валидация и нормализация профилей вайпа.
  */
 
-import { normalizePath } from './glob.js';
+import { isRootMask, literalName, normalizePath } from './glob.js';
 import { normalizeMapSettings, validateMapInput } from './mapgen.js';
-import { normalizeSchedule } from './schedule.js';
+import { normalizeSchedule, validateScheduleInput } from './schedule.js';
 
 export function newId(prefix) {
   return `${prefix}_${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
@@ -17,34 +17,89 @@ export function toBool(value, fallback) {
   return fallback;
 }
 
-function normalizeList(value, { maxItems = 40, maxLength = 400 } = {}) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  const seen = new Set();
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const normalized = normalizePath(item);
-    if (!normalized || normalized === '/') continue;
-    if (normalized.length > maxLength) continue;
-    if (seen.has(normalized)) continue;
-    seen.add(normalized);
-    out.push(normalized);
-    if (out.length >= maxItems) break;
-  }
-  return out;
+export const MAX_LIST_ITEMS = 40;
+export const MAX_PATH_LENGTH = 400;
+export const MAX_COMMANDS = 10;
+export const MAX_COMMAND_LENGTH = 200;
+
+/** Короткий показ строки в тексте ошибки. */
+function shortText(value) {
+  const text = String(value);
+  return text.length > 60 ? `${text.slice(0, 57)}…` : text;
 }
 
-function normalizeCommands(value) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const item of value) {
-    if (typeof item !== 'string') continue;
-    const command = item.trim();
-    if (!command) continue;
-    out.push(command.slice(0, 200));
-    if (out.length >= 10) break;
+/**
+ * Список путей (цели или исключения) → { items, errors }.
+ * Неверный путь не выбрасывается молча, а называется в ошибке: пропавшее
+ * исключение — это удалённый файл, пропавшая цель — неудалённый.
+ * Пустые строки и повторы убираются без ошибки — от них ничего не зависит.
+ */
+function normalizeList(value, { label, maxItems = MAX_LIST_ITEMS, maxLength = MAX_PATH_LENGTH }) {
+  const errors = [];
+  if (value === undefined || value === null) return { items: [], errors };
+  if (!Array.isArray(value)) return { items: [], errors: [`${label}: нужен список путей`] };
+  const items = [];
+  const seen = new Set();
+  value.forEach((item, index) => {
+    const where = `${label} №${index + 1}`;
+    if (typeof item !== 'string') {
+      errors.push(`${where}: путь должен быть строкой`);
+      return;
+    }
+    if (!item.trim()) return;
+    const normalized = normalizePath(item);
+    const escapesRoot =
+      !normalized ||
+      normalized
+        .split('/')
+        .filter(Boolean)
+        .some((segment) => ['.', '..'].includes(literalName(segment)));
+    if (escapesRoot) {
+      errors.push(`${where} (${shortText(item)}): «..» и «.» в пути нельзя — путь указал бы не туда`);
+      return;
+    }
+    if (normalized === '/') {
+      errors.push(`${where}: «/» — это весь каталог сервера, так нельзя. Укажите конкретный каталог или файл`);
+      return;
+    }
+    if (normalized.length > maxLength) {
+      errors.push(`${where}: путь длиннее ${maxLength} символов`);
+      return;
+    }
+    if (seen.has(normalized)) return;
+    seen.add(normalized);
+    items.push(normalized);
+  });
+  if (items.length > maxItems) {
+    errors.push(`${label}: не больше ${maxItems} путей, а их ${items.length} — уберите лишние`);
   }
-  return out;
+  return { items: items.slice(0, maxItems), errors };
+}
+
+/** Команды после запуска → { items, errors }. Лишние и длинные — ошибка, а не обрезка. */
+function normalizeCommands(value) {
+  const errors = [];
+  if (value === undefined || value === null) return { items: [], errors };
+  if (!Array.isArray(value)) return { items: [], errors: ['Команды после запуска: нужен список команд'] };
+  const items = [];
+  value.forEach((item, index) => {
+    const where = `Команда №${index + 1}`;
+    if (typeof item !== 'string') {
+      errors.push(`${where}: должна быть строкой`);
+      return;
+    }
+    const command = item.trim();
+    if (!command) return;
+    if (command.length > MAX_COMMAND_LENGTH) {
+      errors.push(`${where} (${shortText(command)}): длиннее ${MAX_COMMAND_LENGTH} символов`);
+      return;
+    }
+    items.push(command);
+  });
+  if (items.length > MAX_COMMANDS) {
+    errors.push(`Команд после запуска не больше ${MAX_COMMANDS}, а их ${items.length} — уберите лишние`);
+  }
+  return { items: items.slice(0, MAX_COMMANDS), errors };
 }
 
 /**
@@ -76,22 +131,27 @@ export async function buildProfile(ctx, input, existing = null) {
     if (!server) errors.push('Сервер не найден');
   }
 
-  const targets = normalizeList(source.targets ?? base.targets);
-  if (!targets.length) {
+  const targetList = normalizeList(source.targets ?? base.targets, { label: 'Цель' });
+  errors.push(...targetList.errors);
+  const targets = targetList.items;
+  if (!targets.length && !targetList.errors.length) {
     errors.push('Добавьте хотя бы один путь или шаблон для удаления');
   }
   // Удаление всего содержимого корня каталога сервера — это не вайп, а снос
   // установки (вместе со startup-скриптами). Такое надо делать осознанно и
-  // вручную, а не профилем по расписанию.
+  // вручную, а не профилем по расписанию. Запрещены не только /* и /**,
+  // но и любая цель без единой буквы: /**/*, /?*, /*/** значат то же самое.
   for (const target of targets) {
-    if (target === '/*' || target === '/**') {
+    if (isRootMask(target)) {
       errors.push(
-        'Нельзя удалять всё содержимое корня каталога сервера: укажите конкретные каталоги (например /server/*)',
+        `Цель ${target}: нельзя удалять всё содержимое корня каталога сервера — укажите конкретные каталоги (например /server/*)`,
       );
     }
   }
 
-  const excludes = normalizeList(source.excludes ?? base.excludes);
+  const excludeList = normalizeList(source.excludes ?? base.excludes, { label: 'Исключение' });
+  errors.push(...excludeList.errors);
+  const excludes = excludeList.items;
 
   // Карта: у профилей, созданных до 1.2.0, поля map нет — сохраняем прежнее
   // поведение («не трогать сид/размер»), чтобы обновление не меняло карту.
@@ -100,16 +160,19 @@ export async function buildProfile(ctx, input, existing = null) {
   errors.push(...validateMapInput(rawMap));
   const map = normalizeMapSettings(rawMap, { legacy: legacyMap });
 
-  const schedule = normalizeSchedule(source.schedule ?? base.schedule);
+  // Пояс с опечаткой нельзя молча заменить поясом панели: вайп сдвинется.
+  const rawSchedule = source.schedule ?? base.schedule;
+  errors.push(...validateScheduleInput(rawSchedule));
+  const schedule = normalizeSchedule(rawSchedule);
+  const commandList = normalizeCommands(source?.options?.commandsAfter ?? base?.options?.commandsAfter);
+  errors.push(...commandList.errors);
   const options = {
     stopServer: toBool(source?.options?.stopServer ?? base?.options?.stopServer, true),
     startServer: toBool(source?.options?.startServer ?? base?.options?.startServer, true),
     dryRun: toBool(source?.options?.dryRun ?? base?.options?.dryRun, false),
     // Предупреждения в чате: у профилей до 1.4.0 поля нет — включаем по умолчанию.
     warnChat: toBool(source?.options?.warnChat ?? base?.options?.warnChat, true),
-    commandsAfter: normalizeCommands(
-      source?.options?.commandsAfter ?? base?.options?.commandsAfter,
-    ),
+    commandsAfter: commandList.items,
   };
 
   const enabled = toBool(source.enabled ?? base.enabled, true);
@@ -154,7 +217,9 @@ export function publicProfile(profile) {
     targets: profile.targets || [],
     excludes: profile.excludes || [],
     options: profile.options || {},
-    map: profile.map || normalizeMapSettings(null),
+    // У профиля до 1.2.0 поля map нет: вайп карту не трогает — так и показываем,
+    // иначе редактор отправил бы обратно «случайный сид и размер 3000».
+    map: profile.map || normalizeMapSettings(null, { legacy: true }),
     nextRunAt: profile.nextRunAt || null,
     lastRunAt: profile.lastRunAt || null,
     lastRunStatus: profile.lastRunStatus || null,

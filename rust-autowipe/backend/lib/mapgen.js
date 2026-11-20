@@ -17,6 +17,19 @@ export const DEFAULT_SIZE_VAR = 'WORLD_SIZE';
 export const SEED_MODES = ['keep', 'random', 'fixed', 'rotate'];
 export const SIZE_MODES = ['keep', 'fixed', 'random'];
 export const VARIABLE_NAME_RE = /^[A-Za-z_][A-Za-z0-9_]{0,63}$/;
+/**
+ * Плагин пишет только сид и размер карты (ответ владельца №18). Имя переменной
+ * сида должно содержать SEED, размера — SIZE: так их ищет и кнопка «Определить
+ * из шаблона». Иначе вайп ключом панели записал бы число в пароль RCON или порт.
+ */
+export const SEED_VAR_RE = /SEED/i;
+export const SIZE_VAR_RE = /SIZE/i;
+
+/** Имя переменной, если оно допустимо для этой роли, иначе имя по умолчанию. */
+function pickVariable(value, fallback, roleRe) {
+  const name = String(value ?? '').trim();
+  return name && VARIABLE_NAME_RE.test(name) && roleRe.test(name) ? name : fallback;
+}
 
 const MAX_LIST = 64;
 
@@ -61,7 +74,13 @@ function pickRandom(values, fallback) {
 /** Проверка сырого ввода из API до нормализации (сообщения для UI). */
 export function validateMapInput(input) {
   const errors = [];
-  if (!input || typeof input !== 'object') return errors;
+  // Поля нет — карта не меняется (или как у старого профиля). Но строка,
+  // число или список вместо настроек — ошибка: иначе «keep» строкой молча
+  // превращался в случайный сид и размер 3000.
+  if (input === undefined || input === null) return errors;
+  if (typeof input !== 'object' || Array.isArray(input)) {
+    return ['Карта: нужны настройки сида и размера (объект с полями seed и size), а не строка или число'];
+  }
 
   const seed = input.seed && typeof input.seed === 'object' ? input.seed : {};
   const size = input.size && typeof input.size === 'object' ? input.size : {};
@@ -90,9 +109,18 @@ export function validateMapInput(input) {
   for (const key of ['seed', 'size']) {
     const value = vars[key];
     if (value === undefined || value === null || String(value).trim() === '') continue;
-    if (!VARIABLE_NAME_RE.test(String(value).trim())) {
+    const name = String(value).trim();
+    if (!VARIABLE_NAME_RE.test(name)) {
       errors.push(`Карта: имя переменной ${key === 'seed' ? 'сида' : 'размера'} — латиница, цифры и _, начиная с буквы`);
+    } else if (key === 'seed' && !SEED_VAR_RE.test(name)) {
+      errors.push(`Карта: переменная сида ${name} — в имени должно быть SEED (например ${DEFAULT_SEED_VAR}). Другие переменные шаблона плагин не меняет`);
+    } else if (key === 'size' && !SIZE_VAR_RE.test(name)) {
+      errors.push(`Карта: переменная размера ${name} — в имени должно быть SIZE (например ${DEFAULT_SIZE_VAR}). Другие переменные шаблона плагин не меняет`);
     }
+  }
+  const seedName = String(vars.seed ?? '').trim();
+  if (seedName && seedName === String(vars.size ?? '').trim()) {
+    errors.push('Карта: сид и размер не могут писаться в одну переменную');
   }
 
   return errors;
@@ -131,8 +159,14 @@ export function normalizeMapSettings(input, { legacy = false } = {}) {
   const seedValue = toInt(seedSource.value);
   const sizeValue = toInt(sizeSource.value);
 
-  const seedVar = String(varsSource.seed ?? DEFAULT_SEED_VAR).trim() || DEFAULT_SEED_VAR;
-  const sizeVar = String(varsSource.size ?? DEFAULT_SIZE_VAR).trim() || DEFAULT_SIZE_VAR;
+  // Профиль, сохранённый до этой проверки, мог указать любую переменную
+  // шаблона. Такую плагин не пишет: вместо неё — имя по умолчанию.
+  let seedVar = pickVariable(varsSource.seed, DEFAULT_SEED_VAR, SEED_VAR_RE);
+  let sizeVar = pickVariable(varsSource.size, DEFAULT_SIZE_VAR, SIZE_VAR_RE);
+  if (seedVar === sizeVar) {
+    seedVar = DEFAULT_SEED_VAR;
+    sizeVar = DEFAULT_SIZE_VAR;
+  }
 
   return {
     seed: {
@@ -145,10 +179,7 @@ export function normalizeMapSettings(input, { legacy = false } = {}) {
       value: isValidSize(sizeValue) ? sizeValue : null,
       values: uniqueInts(sizeSource.values, isValidSize),
     },
-    vars: {
-      seed: VARIABLE_NAME_RE.test(seedVar) ? seedVar : DEFAULT_SEED_VAR,
-      size: VARIABLE_NAME_RE.test(sizeVar) ? sizeVar : DEFAULT_SIZE_VAR,
-    },
+    vars: { seed: seedVar, size: sizeVar },
   };
 }
 
@@ -187,9 +218,12 @@ export function decideMapValues(map, state = {}) {
   return { seed, size, nextCursor };
 }
 
-/** Человеческое описание для карточки профиля. */
+/**
+ * Человеческое описание для карточки профиля. Нет настроек (профиль до
+ * 1.2.0) — вайп карту не трогает, и описание говорит то же.
+ */
 export function describeMap(map) {
-  const settings = normalizeMapSettings(map);
+  const settings = normalizeMapSettings(map, { legacy: !map });
   const seedText =
     settings.seed.mode === 'keep'
       ? 'сид не меняется'

@@ -5,35 +5,71 @@
  * на каждую «минуту до вайпа»: 5, 4, 3, 2, 1. Отправленные отметки хранятся в
  * профиле по ключу ближайшего запуска (nextRunAt), чтобы панель не дублировала
  * сообщения и не повторяла их после перезапуска.
+ *
+ * Перед проверочным прогоном (dry-run профиля или глобальный dryRun) отсчёт не
+ * отправляется: вайпа не будет, а игроки бы его ждали.
  */
 
 import { createPanelClient } from './api.js';
 
 const STORE_KEY = 'warnedRuns';
 const MAX_TRACKED_RUNS = 5;
-const STATE_KEY = 'wipeWarningState';
+// Последняя попытка отправки — по каждому серверу: { [serverId]: состояние }.
+const STATE_KEY = 'wipeWarningStateByServer';
+// До этой версии здесь хранилось одно состояние на весь плагин. Его читаем
+// (для его сервера), но не трогаем: при откате старая версия читает его как раньше.
+const LEGACY_STATE_KEY = 'wipeWarningState';
+// Записей не больше, чем серверов на большой панели; самые старые уходят.
+const MAX_SERVER_STATES = 500;
 
-/** Последняя попытка отправки — чтобы показать её в интерфейсе, а не только в логе. */
-let lastState = null;
+/** Последняя попытка отправки по серверам — чтобы показать её во вкладке сервера. */
+const states = new Map();
+/** Чтение хранилища: из какого контекста и промис, который его ждёт. */
+let loading = null;
 
-export function getWarningState() {
-  return lastState;
+/** Ключ сервера; без сервера — пустая строка (так записывают только тесты). */
+function serverKey(serverId) {
+  return serverId === undefined || serverId === null ? '' : String(serverId);
 }
 
-export async function loadWarningState(ctx) {
+/** Последняя попытка отправки на этом сервере или null. Чужие серверы не видны. */
+export function getWarningState(serverId) {
+  return states.get(serverKey(serverId)) ?? null;
+}
+
+/** Прочитать состояние из хранилища. Свежее состояние в памяти главнее. */
+export function loadWarningState(ctx) {
+  loading = { ctx, promise: readStates(ctx) };
+  return loading.promise;
+}
+
+async function readStates(ctx) {
+  let stored = null;
   try {
-    const stored = await ctx.getStorage(STATE_KEY);
-    if (stored && typeof stored === 'object') lastState = stored;
+    stored = await ctx.getStorage(STATE_KEY);
+    if (!stored || typeof stored !== 'object' || Array.isArray(stored)) {
+      const legacy = await ctx.getStorage(LEGACY_STATE_KEY);
+      stored = legacy && typeof legacy === 'object' && legacy.serverId ? { [legacy.serverId]: legacy } : null;
+    }
   } catch {
     /* хранилище может быть недоступно — не критично */
   }
-  return lastState;
+  for (const [serverId, state] of Object.entries(stored || {})) {
+    if (state && typeof state === 'object' && !states.has(serverId)) states.set(serverId, state);
+  }
+  return Object.fromEntries(states);
 }
 
 async function rememberState(ctx, state) {
-  lastState = state;
+  // Без загрузки запись затёрла бы в хранилище состояние других серверов.
+  if (loading?.ctx !== ctx) loadWarningState(ctx);
+  await loading.promise;
+  const key = serverKey(state?.serverId);
+  states.delete(key);
+  states.set(key, state);
+  while (states.size > MAX_SERVER_STATES) states.delete(states.keys().next().value);
   try {
-    await ctx.setStorage(STATE_KEY, state);
+    await ctx.setStorage(STATE_KEY, Object.fromEntries(states));
   } catch {
     /* без сохранения состояние проживёт до перезапуска панели */
   }
@@ -85,6 +121,8 @@ async function rememberSent(ctx, profile, runAt, minutesLeft) {
  */
 export async function sendWipeWarnings(ctx, profiles, now = new Date()) {
   if (ctx.getConfig('wipeWarningEnabled') === false) return 0;
+  // Глобальный режим проверки: каждый прогон — dry-run, вайпа не будет.
+  if (ctx.getConfig('dryRun') === true) return 0;
 
   const leadMinutes = Number(ctx.getConfig('wipeWarningMinutes') ?? 5);
   if (!Number.isFinite(leadMinutes) || leadMinutes <= 0) return 0;
@@ -100,6 +138,8 @@ export async function sendWipeWarnings(ctx, profiles, now = new Date()) {
   for (const profile of profiles) {
     if (!profile || profile.enabled === false) continue;
     if (profile?.options?.warnChat === false) continue;
+    // Проверочный прогон профиля ничего не удаляет — отсчёт ввёл бы игроков в заблуждение.
+    if (profile?.options?.dryRun) continue;
     if (!profile.serverId) continue;
 
     const runAt = profile.nextRunAt ? new Date(profile.nextRunAt) : null;

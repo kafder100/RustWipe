@@ -7,7 +7,11 @@
   - у записи есть name, https-downloadUrl и 64-hex sha256;
   - sha256 совпадает с реальным файлом из dist/ и с .sha256-сайдкаром;
   - zip содержит только разрешённые панелью записи и root plugin.json;
-  - имя и версия в zip совпадают с записью индекса.
+  - имя и версия в zip совпадают с записью индекса;
+  - в zip лежат ровно те файлы rust-autowipe/, которые берёт pack.py, байт в байт:
+    панели ставят тот же код, который проверяют тесты;
+  - версия сходится везде: верхняя запись CHANGELOG.md и константа version
+    во frontend.mjs — та же, что в plugin.json.
 
 Запуск: python3 tools/check_index.py
 """
@@ -30,10 +34,24 @@ ROOT = Path(__file__).resolve().parent.parent
 PLUGIN_DIR = ROOT / "rust-autowipe"
 DIST_DIR = ROOT / "dist"
 INDEX_PATH = ROOT / "index.json"
+CHANGELOG_PATH = ROOT / "CHANGELOG.md"
+FRONTEND_PATH = PLUGIN_DIR / "frontend" / "frontend.mjs"
 
 ALLOWED_TOP_LEVEL = {"plugin.json", "README.md", "LICENSE", "backend", "frontend", "assets"}
 SHA256_RE = re.compile(r"^[0-9a-f]{64}$")
 VERSION_RE = re.compile(r"^\d+\.\d+\.\d+$")
+# Заголовок записи CHANGELOG.md: «## 1.5.6 — дата» или диапазон «## 1.5.1–1.5.2 — дата».
+CHANGELOG_HEADING_RE = re.compile(r"^##\s+(\d+\.\d+\.\d+)(?:\s*[–-]\s*(\d+\.\d+\.\d+))?")
+# Константа версии во frontend.mjs: version: '1.5.6' (объект manifest в конце файла).
+FRONTEND_VERSION_RE = re.compile(r"""\bversion\s*:\s*(['"`])(\d+\.\d+\.\d+)\1""")
+
+# Какие файлы rust-autowipe/ попадают в пакет — те же правила, что в
+# collect_files из tools/pack.py. Поменяли там — поменяйте и здесь (иначе
+# эта проверка упадёт на первой же сборке).
+PACKAGE_ROOT_FILES = ("plugin.json", "README.md", "LICENSE")
+PACKAGE_DIRS = ("backend", "frontend", "assets")
+FORBIDDEN_NAMES = {".DS_Store", "Thumbs.db"}
+FORBIDDEN_PARTS = {"__pycache__", "node_modules", ".git", ".cache", "src", "dist", "tools"}
 
 
 def fail(errors: list[str]) -> None:
@@ -52,6 +70,79 @@ def load_json(path: Path, errors: list[str], label: str):
     except json.JSONDecodeError as error:
         errors.append(f"{label}: невалидный JSON ({error})")
         return None
+
+
+def source_files() -> dict[str, Path]:
+    """Файлы rust-autowipe/, которые pack.py кладёт в пакет: имя в архиве → файл."""
+    files: dict[str, Path] = {}
+    for name in PACKAGE_ROOT_FILES:
+        path = PLUGIN_DIR / name
+        if path.is_file():
+            files[name] = path
+    for directory in PACKAGE_DIRS:
+        base = PLUGIN_DIR / directory
+        if not base.is_dir():
+            continue
+        for path in sorted(base.rglob("*")):
+            if not path.is_file():
+                continue
+            rel = path.relative_to(PLUGIN_DIR)
+            if any(part in FORBIDDEN_PARTS for part in rel.parts):
+                continue
+            if path.name in FORBIDDEN_NAMES or path.name.startswith("."):
+                continue
+            files[rel.as_posix()] = path
+    return files
+
+
+def compare_with_sources(archive: zipfile.ZipFile, filename: str, errors: list[str]) -> None:
+    """Пакет должен состоять ровно из файлов rust-autowipe/, байт в байт."""
+    expected = source_files()
+    packed = {info.filename for info in archive.infolist() if not info.is_dir()}
+    missing = sorted(set(expected) - packed)
+    extra = sorted(packed - set(expected))
+    differ = sorted(name for name in packed & set(expected) if archive.read(name) != expected[name].read_bytes())
+    problems = []
+    if missing:
+        problems.append("нет в пакете: " + ", ".join(missing))
+    if extra:
+        problems.append("лишнее в пакете (нет в rust-autowipe/): " + ", ".join(extra))
+    if differ:
+        problems.append("отличается от rust-autowipe/: " + ", ".join(differ))
+    if problems:
+        errors.append(
+            f"dist/{filename} собран не из этих исходников ({'; '.join(problems)}). "
+            "Поднимите version в plugin.json и пересоберите пакет: python tools/pack.py"
+        )
+
+
+def check_versions(version: str, errors: list[str]) -> None:
+    """Верхняя запись CHANGELOG.md и версия во frontend.mjs — та же, что в plugin.json."""
+    if not CHANGELOG_PATH.is_file():
+        errors.append("CHANGELOG.md: файл не найден")
+    else:
+        top = None
+        for line in CHANGELOG_PATH.read_text(encoding="utf-8", errors="replace").splitlines():
+            match = CHANGELOG_HEADING_RE.match(line)
+            if match:
+                top = match.group(2) or match.group(1)
+                break
+        if top is None:
+            errors.append("CHANGELOG.md: нет ни одной записи вида «## X.Y.Z»")
+        elif top != version:
+            errors.append(
+                f"CHANGELOG.md: верхняя запись — {top}, а version в plugin.json — {version}. "
+                f"Добавьте в начало CHANGELOG.md раздел «## {version}»"
+            )
+
+    if FRONTEND_PATH.is_file():
+        text = FRONTEND_PATH.read_text(encoding="utf-8", errors="replace")
+        wrong = sorted({match.group(2) for match in FRONTEND_VERSION_RE.finditer(text)} - {version})
+        if wrong:
+            errors.append(
+                f"rust-autowipe/frontend/frontend.mjs: version {', '.join(wrong)}, а в plugin.json — {version}. "
+                "Поднимите version в объекте manifest в конце frontend.mjs"
+            )
 
 
 def main() -> None:
@@ -81,6 +172,8 @@ def main() -> None:
 
     manifest_name = manifest.get("name") if isinstance(manifest, dict) else None
     manifest_version = manifest.get("version") if isinstance(manifest, dict) else None
+    if isinstance(manifest_version, str):
+        check_versions(manifest_version, errors)
 
     matched_entry = None
     for position, entry in enumerate(entries):
@@ -152,6 +245,8 @@ def main() -> None:
                         errors.append(
                             f"zip: plugin.json version={inner.get('version')!r} не совпадает с индексом {version!r}"
                         )
+                if name == manifest_name:
+                    compare_with_sources(archive, filename, errors)
         except zipfile.BadZipFile:
             errors.append(f"dist/{filename}: не zip-архив")
 

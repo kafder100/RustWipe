@@ -4,24 +4,61 @@ on:
   push:
     branches: [main]
   pull_request:
+  # release.yml вызывает этот же набор проверок перед выпуском.
+  workflow_call:
+
+# Токену CI нужно только читать код репозитория.
+permissions:
+  contents: read
 
 jobs:
   test:
+    name: test (Node ${{ matrix.node }}, ${{ matrix.tz }})
     runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      # Упал один вариант — остальные всё равно доходят до конца: видно все поломки сразу.
+      fail-fast: false
+      matrix:
+        # 22 — Node в образе backend Catalyst v1.89.2 (на нём работает панель), 24 — следующая LTS.
+        node: ['22', '24']
+        # Расписание считается в часовом поясе процесса панели: проверяем не только UTC.
+        tz: ['UTC', 'Europe/Moscow', 'America/New_York']
+    env:
+      TZ: ${{ matrix.tz }}
     steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-node@v4
+      # Действия закреплены по SHA коммита: тег можно передвинуть, коммит — нет.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
-          node-version: '20'
+          persist-credentials: false
+
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: ${{ matrix.node }}
 
       - name: Backend logic tests
         run: node tools/test.mjs
 
+      # !cancelled(): шаг идёт, даже если предыдущий упал, — видно все поломки.
       - name: Frontend smoke test
+        if: ${{ !cancelled() }}
         run: node tools/ui-smoke.mjs
 
-      # Проверяет схему plugin.json, index.json, sha256 пакета и состав zip:
-      # именно эти данные читает маркетплейс Catalyst при установке.
+      # Тесты ревью tools/review/*.test.mjs: каждый файл — отдельным процессом, по очереди.
+      - name: Review tests
+        if: ${{ !cancelled() }}
+        run: node tools/review/run.mjs
+
+  package:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          persist-credentials: false
+
+      # Проверяет схему plugin.json, index.json, sha256 пакета и состав zip
+      # (именно это читает маркетплейс Catalyst), что код в zip тот же, что
+      # в rust-autowipe/, и что версия в CHANGELOG.md и во frontend та же.
       - name: Validate marketplace index and package
         run: python3 tools/check_index.py

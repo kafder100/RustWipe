@@ -24,7 +24,10 @@ import { formatWarning, warningPlan } from '../rust-autowipe/backend/lib/warning
 import plugin, { runTick } from '../rust-autowipe/backend/index.js';
 import { PRESETS } from '../rust-autowipe/backend/lib/presets.js';
 
+// Упавшая проверка не останавливает прогон: остальные идут дальше, а в конце
+// печатается итог со списком упавших и код выхода 1.
 let passed = 0;
+const failed = [];
 function test(name, fn) {
   return Promise.resolve()
     .then(fn)
@@ -33,10 +36,10 @@ function test(name, fn) {
       console.log(`  ok  ${name}`);
     })
     .catch((error) => {
+      failed.push(name);
       console.error(`FAIL  ${name}`);
       console.error(error);
       process.exitCode = 1;
-      throw error;
     });
 }
 
@@ -573,7 +576,10 @@ await test('onLoad регистрирует только серверные ро
   assert.equal(tasks[0].cron, '* * * * *');
 });
 
-await test('владелец сервера читает данные, но без роли не может менять', async () => {
+// Владелец отвечал: вайп запускают админы и владельцы серверов. Поэтому
+// владельцу своего сервера роль плагина не нужна, а чужому человеку без роли
+// по-прежнему ничего нельзя менять.
+await test('владелец сервера без роли плагина меняет профили и запускает вайп', async () => {
   const server = { id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'owner_1', name: 'Rust', status: 'stopped' };
   const { ctx, routes } = makeContext({
     tunnel: makeTunnel(),
@@ -588,8 +594,34 @@ await test('владелец сервера читает данные, но бе
   });
   assert.equal(status.result.success, true);
   assert.equal(status.result.data.server.id, 'srv1');
-  assert.equal(status.result.data.permissions.canManage, false);
-  assert.equal(status.result.data.permissions.canRun, false);
+  assert.equal(status.result.data.permissions.canManage, true);
+  assert.equal(status.result.data.permissions.canRun, true);
+
+  const create = await callRoute(routes, 'POST', '/servers/:serverId/profiles', {
+    params: { serverId: 'srv1' },
+    body: { name: 'x', targets: ['/server/*'] },
+  });
+  assert.equal(create.reply.statusCode, 200);
+  assert.equal(create.result.success, true);
+});
+
+await test('не владелец и не админ без роли плагина менять профили не может', async () => {
+  const server = { id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'owner_1', name: 'Rust', status: 'stopped' };
+  const { ctx, routes } = makeContext({
+    tunnel: makeTunnel(),
+    config: { apiKey: 'k', panelUrl: 'https://panel.test' },
+    servers: [server],
+    userId: 'sub_1',
+    perms: [],
+  });
+  await plugin.onLoad(ctx);
+  // Субпользователь с правом server.read на этом сервере: вкладку видит, но без роли не меняет.
+  globalThis.fetch = async (url) => {
+    const json = (data) => ({ ok: true, status: 200, text: async () => JSON.stringify({ success: true, data }) });
+    if (String(url).endsWith('/api/servers/srv1/permissions')) return json([{ userId: 'sub_1', permissions: ['server.read'] }]);
+    if (String(url).endsWith('/api/servers/srv1')) return json({ id: 'srv1', template: { name: 'Rust' } });
+    return { ok: false, status: 404, text: async () => '' };
+  };
 
   const create = await callRoute(routes, 'POST', '/servers/:serverId/profiles', {
     params: { serverId: 'srv1' },
@@ -633,10 +665,14 @@ await test('админ панели проходит к любому серве�
   assert.equal(status.result.data.server.id, 'srv1');
 });
 
-await test('субпользователь проходит, если панель подтверждает доступ по cookie', async () => {
+// Субпользователя плагин ищет в списке доступа сервера, который читает своим
+// API-ключом. Cookie пользователя никуда не пересылаются: раньше ответ «сервер
+// виден» по его cookie пропускал и человека с глобальным server.read.
+await test('субпользователь проходит, если он есть в списке доступа сервера; cookie не пересылаются', async () => {
   const server = { id: 'srv1', uuid: 'u', nodeId: 'n', ownerId: 'owner_1', name: 'Rust', status: 'stopped' };
   const { ctx, routes } = makeContext({
     tunnel: makeTunnel(),
+    config: { apiKey: 'k', panelUrl: 'https://panel.test' },
     servers: [server],
     userId: 'sub_1',
     perms: [],
@@ -644,9 +680,13 @@ await test('субпользователь проходит, если панел
   await plugin.onLoad(ctx);
 
   const calls = [];
+  let accessList = [{ userId: 'sub_1', permissions: ['server.read'] }];
   globalThis.fetch = async (url, options) => {
-    calls.push({ url: String(url), cookie: options?.headers?.cookie });
-    return { ok: true, status: 200, text: async () => '{}' };
+    calls.push({ url: String(url), cookie: options?.headers?.cookie, auth: options?.headers?.authorization });
+    const json = (data) => ({ ok: true, status: 200, text: async () => JSON.stringify({ success: true, data }) });
+    if (String(url).endsWith('/api/servers/srv1/permissions')) return json(accessList);
+    if (String(url).endsWith('/api/servers/srv1')) return json({ id: 'srv1', template: { name: 'Rust' } });
+    return { ok: false, status: 404, text: async () => '' };
   };
 
   const status = await callRoute(routes, 'GET', '/servers/:serverId/status', {
@@ -654,9 +694,17 @@ await test('субпользователь проходит, если панел
     headers: { cookie: 'session=abc' },
   });
   assert.equal(status.result.success, true);
-  assert.equal(calls.length, 1);
-  assert.ok(calls[0].url.endsWith('/api/servers/srv1'));
-  assert.equal(calls[0].cookie, 'session=abc');
+  assert.ok(calls.some((call) => call.url.endsWith('/api/servers/srv1/permissions')));
+  assert.ok(calls.every((call) => call.cookie === undefined), 'cookie пользователя ушли в панель');
+  assert.ok(calls.every((call) => call.auth === 'Bearer k'), 'запросы идут ключом плагина');
+
+  // Нет в списке доступа — нет доступа, даже если cookie есть.
+  accessList = [];
+  const denied = await callRoute(routes, 'GET', '/servers/:serverId/status', {
+    params: { serverId: 'srv1' },
+    headers: { cookie: 'session=abc' },
+  });
+  assert.equal(denied.reply.statusCode, 403);
 });
 
 await test('профили изолированы по серверу', async () => {
@@ -704,7 +752,9 @@ await test('планировщик запускает просроченный �
   const tunnel = makeTunnel();
   const { ctx, stores } = makeContext({
     tunnel,
-    config: { apiKey: 'k', panelUrl: 'https://panel.test', catchUpMinutes: 120 },
+    // Предупреждения выключены: с ними пропущенный вайп догоняется не сразу,
+    // а после отсчёта в чате (это проверяют тесты tools/review/).
+    config: { apiKey: 'k', panelUrl: 'https://panel.test', catchUpMinutes: 120, wipeWarningEnabled: false },
     servers: [server],
   });
   globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => ({ success: true }) });
@@ -992,8 +1042,10 @@ await test('предупреждения: окно 5 минут, счёт мин
   assert.equal(formatWarning('{minutes}/{minutes}', 2), '2/2');
 });
 
-if (process.exitCode) {
-  console.error(`\n${passed} проверок прошло, есть ошибки`);
+if (failed.length) {
+  console.error(`\nПроверок прошло: ${passed}, упало: ${failed.length}`);
+  for (const name of failed) console.error(`  FAIL  ${name}`);
+  process.exitCode = 1;
 } else {
   console.log(`\nВсе проверки прошли: ${passed}`);
 }

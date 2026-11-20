@@ -1,8 +1,8 @@
 {
   "name": "rust-autowipe",
-  "version": "1.5.6",
+  "version": "1.6.0",
   "displayName": "Rust AutoWipe",
-  "description": "Автовайпы Rust для конкретного сервера: вкладка у серверов с шаблоном Rust, расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов с управлением списком, ротация сида и размера карты (WORLD_SEED / WORLD_SIZE), предупреждения в чате за 5 минут до вайпа, остановка и запуск сервера, история запусков с раскрытием по шагам.",
+  "description": "Автовайпы Rust для конкретного сервера: вкладка у серверов с шаблоном Rust, расписание (неделя / первый четверг / день месяца / интервал), выбор каталогов и файлов с управлением списком, ротация сида и размера карты (WORLD_SEED / WORLD_SIZE), предупреждения в чате за несколько минут до вайпа (настройка), остановка и запуск сервера, история запусков с раскрытием по шагам.",
   "author": "H1NZON",
   "catalystVersion": ">=1.80.0",
   "permissions": [
@@ -24,7 +24,7 @@
     {
       "id": "rust-autowipe.run",
       "label": "Rust AutoWipe: запуск",
-      "description": "Запускать вайп вручную кнопкой «Запустить сейчас»."
+      "description": "Запускать вайп вручную кнопкой «Вайп сейчас»."
     }
   ],
   "backend": {
@@ -43,7 +43,7 @@
     "apiKey": {
       "type": "password",
       "default": "",
-      "description": "API-ключ панели с правами server.start и server.stop (и console.write, если нужны команды в консоль). Создаётся в Admin → Access Control → API Keys."
+      "description": "API-ключ панели с правами server.read, server.start, server.stop и admin.write (console.write — если нужны команды в консоль). Создаётся в Admin → Access Control → API Keys."
     },
     "schedulerEnabled": {
       "type": "boolean",
@@ -93,9 +93,10 @@
         "profileId": "string",
         "serverId": "string",
         "ok": "boolean",
+        "dryRun": "boolean",
         "deleted": "number"
       },
-      "description": "Вайп завершён (успешно или с ошибками)."
+      "description": "Вайп завершён (успешно или с ошибками). dryRun = true для проверки без удаления."
     }
   },
   "storageEngine": "dedicated"

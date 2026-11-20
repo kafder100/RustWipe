@@ -9,6 +9,14 @@
 
 const POWER_ACTIONS = new Set(['start', 'stop', 'restart', 'kill']);
 
+/**
+ * Сколько ждать ответа на команду питания. Панель держит POST /stop, пока агент
+ * не подтвердит остановку, — до 60 с (сохранение мира, затем сигнал). Потом она
+ * отвечает 200 или 202: оба ответа значат «команда принята», итог плагин
+ * смотрит по статусу сервера. Поэтому ждём дольше 60 с.
+ */
+const POWER_TIMEOUT_MS = 90000;
+
 /** Базовый URL панели, доступный из контейнера backend. */
 export function resolvePanelBase(ctx) {
   const configured = String(ctx.getConfig('panelUrl') ?? '')
@@ -62,12 +70,18 @@ export function createPanelClient(ctx) {
               .join('; ')
           : '';
         const detail = fields ? `${message} (${fields})` : message;
-        throw new Error(`${method} ${path} → ${response.status}: ${String(detail).slice(0, 400)}`);
+        const refused = new Error(`${method} ${path} → ${response.status}: ${String(detail).slice(0, 400)}`);
+        // Панель ответила отказом: команда не выполнена.
+        refused.status = response.status;
+        throw refused;
       }
       return json;
     } catch (error) {
       if (error?.name === 'AbortError') {
-        throw new Error(`${method} ${path}: таймаут ${timeoutMs} мс`);
+        const timeout = new Error(`${method} ${path}: таймаут ${timeoutMs} мс`);
+        // Ответа нет: команда могла и дойти до панели — итог неизвестен.
+        timeout.timedOut = true;
+        throw timeout;
       }
       throw error;
     } finally {
@@ -84,7 +98,9 @@ export function createPanelClient(ctx) {
     },
     power(serverId, action) {
       if (!POWER_ACTIONS.has(action)) throw new Error(`Неизвестное действие: ${action}`);
-      return call('POST', `/api/servers/${encodeURIComponent(serverId)}/${action}`);
+      return call('POST', `/api/servers/${encodeURIComponent(serverId)}/${action}`, undefined, {
+        timeoutMs: POWER_TIMEOUT_MS,
+      });
     },
     command(serverId, command) {
       return call('POST', `/api/servers/${encodeURIComponent(serverId)}/console/command`, {

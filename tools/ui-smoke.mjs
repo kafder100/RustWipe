@@ -284,9 +284,9 @@ await new Promise((resolve) => realSetTimeout(resolve, 20));
 assert.ok(styles.size === 0 || true);
 assert.ok(textOf(root).includes('Rust AutoWipe'), 'нет заголовка');
 assert.ok(textOf(root).includes('Еженедельный карта-вайп'), 'нет профиля в списке');
-assert.ok(textOf(root).includes('Rust EU #1'), 'нет имени сервера в шапке');
+assert.ok(textOf(root).includes('Rust EU #1'), 'нет имени сервера над списком профилей');
 assert.ok(!textOf(root).includes('Все серверы'), 'остался панельный список серверов');
-assert.ok(textOf(root).includes('История запусков'), 'нет истории');
+assert.ok(textOf(root).includes('История прогонов'), 'нет истории');
 
 // Открываем редактор
 click(findByText(root, '+ Новый профиль'));
@@ -319,15 +319,23 @@ click(find(root, (node) => node.nodeType === 1 && /Добавить выбран
 assert.ok(textOf(root).includes('/server/rust/proceduralmap.4500.1.2.sav'), 'путь не добавился');
 assert.ok(textOf(root).includes('Новый профиль вайпа'), 'не вернулись в редактор');
 
-// Закрываем редактор и запускаем профиль вручную
+// Закрываем редактор: в нём правки (путь из пикера), поэтому «Отмена» сначала спрашивает
+const runPosts = () => requests.filter((request) => request.path.endsWith('/run') && request.method === 'POST');
 click(findByText(root, 'Отмена'));
-click(findByText(root, 'Запустить сейчас'));
+assert.ok(textOf(root).includes('Закрыть без сохранения?'), 'редактор с правками закрылся без вопроса');
+click(findByText(root, 'Закрыть без сохранения'));
+assert.ok(!textOf(root).includes('Новый профиль вайпа'), 'редактор не закрылся');
+
+// Запускаем вайп вручную: сначала окно подтверждения
+click(findByText(root, 'Вайп сейчас'));
+const overlay = find(root, (node) => node.nodeType === 1 && node.className === 'rw-overlay');
+assert.ok(overlay, 'нет окна подтверждения перед вайпом');
+assert.ok(textOf(overlay).includes('Вернуть удалённое нельзя'), 'в окне не сказано о последствиях');
+assert.equal(runPosts().length, 0, 'вайп ушёл без подтверждения');
+click(find(overlay, (node) => node.tagName === 'BUTTON' && node.textContent.trim() === 'Вайп сейчас'));
 await new Promise((resolve) => realSetTimeout(resolve, 20));
-assert.ok(
-  requests.some((request) => request.path.endsWith('/run') && request.method === 'POST'),
-  'не было POST на запуск',
-);
-assert.ok(textOf(root).includes('Запустить сейчас'), 'интерфейс сломался после запуска');
+assert.equal(runPosts().length, 1, 'не было POST на запуск после подтверждения');
+assert.ok(textOf(root).includes('Вайп сейчас'), 'интерфейс сломался после запуска');
 
 // Просмотр «что будет удалено»
 click(findByText(root, 'Что будет удалено'));

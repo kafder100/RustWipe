@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Публикация содержимого этого каталога в GitHub через REST API (Git Data API),
- * без установленного git.
+ * без git push.
  *
  * Токен берётся из переменной окружения GITHUB_TOKEN / GH_TOKEN либо из файла
  * `.github-token` в корне репозитория (или в родительском каталоге).
@@ -14,26 +14,41 @@
  *
  * Параметры: --owner kafder100 --repo RustWipe --branch main --message "..."
  *
- * Публикация «зеркальная»: дерево коммита собирается только из файлов этого
- * каталога, поэтому файлы, удалённые локально, исчезнут и в репозитории.
+ * Какие файлы уходят. Список даёт git (`git ls-files`): файлы, которые git
+ * отслеживает, и новые файлы, которые не исключены .gitignore. Всё, что
+ * исключает .gitignore (стенд .preview/, временные файлы, .env), не уходит —
+ * даже если git это уже отслеживает (такие файлы скрипт называет в предупреждении).
+ * Поэтому нужен git, а сам каталог должен быть копией репозитория (git clone).
+ * Без git скрипт ничего не отправляет.
+ *
+ * Сверх этого скрипт никогда не отправляет файлы, похожие на секреты: .env,
+ * .env.*, .github-token, *.pem, *.key — даже если git их отслеживает. Такие
+ * файлы скрипт называет в предупреждении (и в --dry-run тоже).
+ *
+ * Публикация «зеркальная»: дерево коммита собирается только из этого списка,
+ * поэтому файлы, удалённые локально, исчезнут и в репозитории.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const API = 'https://api.github.com';
 const API_VERSION = '2022-11-28';
 
+// Мусор, который не отправляется, даже если его отслеживает git.
 const IGNORED_NAMES = new Set([
   '.git',
   'node_modules',
   '__pycache__',
-  '.github-token',
   '.DS_Store',
   'Thumbs.db',
 ]);
+
+// Имена файлов, похожих на секреты: такие файлы не отправляются никогда.
+const SECRET_NAMES = [/^\.env$/i, /^\.env\..+$/i, /^\.github-token$/i, /\.pem$/i, /\.key$/i];
 
 const DEFAULTS = {
   owner: 'kafder100',
@@ -84,15 +99,66 @@ function readToken() {
   );
 }
 
-function collectFiles(dir = ROOT, files = []) {
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (IGNORED_NAMES.has(entry.name)) continue;
-    if (entry.name.endsWith('.pyc') || entry.name.endsWith('.log')) continue;
-    const full = path.join(dir, entry.name);
-    if (entry.isDirectory()) collectFiles(full, files);
-    else files.push(path.relative(ROOT, full).split(path.sep).join('/'));
+/** Список путей от `git ls-files` (относительно ROOT, через «/»). Без git — ошибка. */
+function gitLsFiles(options) {
+  const result = spawnSync('git', ['-C', ROOT, 'ls-files', '-z', ...options], {
+    encoding: 'utf8',
+    maxBuffer: 64 * 1024 * 1024,
+    windowsHide: true,
+  });
+  if (result.error || result.status !== 0) {
+    const reason = result.error ? result.error.message : String(result.stderr || '').trim() || `код ${result.status}`;
+    throw new Error(
+      `Не получен список файлов от git (${reason}). Скрипт отправляет только файлы из git, ` +
+        'чтобы не выложить исключённое .gitignore. Установите git и запускайте скрипт в копии репозитория (git clone)',
+    );
   }
-  return files.sort();
+  return result.stdout.split('\0').filter(Boolean);
+}
+
+function looksLikeSecret(file) {
+  const name = file.split('/').pop();
+  return SECRET_NAMES.some((pattern) => pattern.test(name));
+}
+
+/**
+ * Что отправить (files) и что не отправлять никогда: похожее на секрет (secrets)
+ * и то, что git отслеживает, хотя .gitignore это исключает (ignored).
+ */
+function collectFiles() {
+  // Отслеживаемые файлы и новые, которые .gitignore не исключает.
+  const listed = gitLsFiles(['--cached', '--others', '--exclude-standard']);
+  // Отслеживаемые файлы, которые .gitignore исключает (добавлены до правила).
+  const trackedIgnored = new Set(gitLsFiles(['--cached', '--ignored', '--exclude-standard']));
+  const files = [];
+  const secrets = [];
+  const ignored = [];
+  for (const file of new Set(listed)) {
+    if (file.split('/').some((part) => IGNORED_NAMES.has(part))) continue;
+    if (file.endsWith('.pyc') || file.endsWith('.log')) continue;
+    let stat;
+    try {
+      stat = fs.lstatSync(path.join(ROOT, ...file.split('/')));
+    } catch {
+      continue; // файл удалён локально — в зеркало он не попадает
+    }
+    if (!stat.isFile()) continue; // ссылки и вложенные репозитории не отправляются
+    if (looksLikeSecret(file)) secrets.push(file);
+    else if (trackedIgnored.has(file)) ignored.push(file);
+    else files.push(file);
+  }
+  return { files: files.sort(), secrets: secrets.sort(), ignored: ignored.sort() };
+}
+
+function warnSkipped({ secrets, ignored }) {
+  if (secrets.length) {
+    console.warn(`ВНИМАНИЕ: не отправляются файлы, похожие на секреты (${secrets.length}): ${secrets.join(', ')}`);
+    console.warn('  Добавьте их в .gitignore; если git их уже отслеживает, уберите: git rm --cached <файл>');
+  }
+  if (ignored.length) {
+    console.warn(`ВНИМАНИЕ: не отправляются файлы, которые исключает .gitignore (${ignored.length}): ${ignored.join(', ')}`);
+    console.warn('  git их всё ещё отслеживает — уберите из git: git rm -r --cached <путь>');
+  }
 }
 
 function humanSize(bytes) {
@@ -141,7 +207,8 @@ async function api(token, method, endpoint, body, attempt = 1) {
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const files = collectFiles();
+  const { files, secrets, ignored } = collectFiles();
+  warnSkipped({ secrets, ignored });
 
   if (!files.length) throw new Error('Нечего публиковать: каталог пуст');
   const totalBytes = files.reduce(

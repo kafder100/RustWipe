@@ -63,6 +63,15 @@ function clear(node) {
   while (node.firstChild) node.removeChild(node.firstChild);
 }
 
+/** Узлы с атрибутом attr внутри root; без querySelectorAll — пустой список. */
+function markedNodes(root, attr) {
+  try {
+    return typeof root.querySelectorAll === 'function' ? [...root.querySelectorAll(`[${attr}]`)] : [];
+  } catch {
+    return [];
+  }
+}
+
 function clone(value) {
   return JSON.parse(JSON.stringify(value));
 }
@@ -87,7 +96,11 @@ async function api(path, options = {}) {
   }
   if (!response.ok || !json || json.success === false) {
     const message = json?.error || json?.message || `HTTP ${response.status}`;
-    throw new Error(String(message));
+    const error = new Error(String(message));
+    // Код ответа и code backend (например PROFILE_CHANGED) — чтобы показать понятный текст.
+    error.status = response.status;
+    error.code = json?.code || null;
+    throw error;
   }
   return json.data !== undefined ? json.data : json;
 }
@@ -129,6 +142,59 @@ function formatPanelDate(iso, offsetMinutes) {
   return `${s.slice(8, 10)}.${s.slice(5, 7)}.${s.slice(0, 4)} ${s.slice(11, 16)}`;
 }
 
+const zoneFormatters = new Map();
+
+/**
+ * Части даты (день, месяц, год, часы, минуты, секунды) в часовом поясе zone.
+ * Смещение пояса берётся на саму дату, поэтому переход на летнее и зимнее
+ * время учтён. null — пояс не задан или браузер его не знает.
+ */
+function zoneParts(date, zone) {
+  if (!zone) return null;
+  if (!zoneFormatters.has(zone)) {
+    let formatter = null;
+    try {
+      formatter = new Intl.DateTimeFormat('en-GB', {
+        timeZone: zone,
+        year: 'numeric',
+        month: '2-digit',
+        day: '2-digit',
+        hour: '2-digit',
+        minute: '2-digit',
+        second: '2-digit',
+        hourCycle: 'h23',
+      });
+    } catch {
+      formatter = null;
+    }
+    zoneFormatters.set(zone, formatter);
+  }
+  const formatter = zoneFormatters.get(zone);
+  if (!formatter) return null;
+  const parts = {};
+  for (const part of formatter.formatToParts(date)) parts[part.type] = part.value;
+  if (parts.hour === '24') parts.hour = '00'; // старые браузеры пишут полночь как 24
+  return parts;
+}
+
+/** «дд.мм.гггг чч:мм» в поясе zone; без пояса — по смещению «на сейчас», как раньше. */
+function formatZonedDate(iso, zone, offsetMinutes) {
+  if (!iso) return '—';
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '—';
+  const p = zoneParts(date, zone);
+  if (!p) return formatPanelDate(iso, offsetMinutes);
+  return `${p.day}.${p.month}.${p.year} ${p.hour}:${p.minute}`;
+}
+
+/** Смещение пояса zone от UTC в минутах на момент date; null — пояс неизвестен. */
+function zoneOffsetMinutes(date, zone) {
+  const p = zoneParts(date, zone);
+  if (!p) return null;
+  const asUtc = Date.UTC(Number(p.year), Number(p.month) - 1, Number(p.day), Number(p.hour), Number(p.minute), Number(p.second));
+  return Math.round((asUtc - Math.floor(date.getTime() / 1000) * 1000) / 60000);
+}
+
 function humanDelta(iso, offsetMinutes) {
   if (!iso) return '';
   const diffMs = new Date(iso).getTime() - Date.now();
@@ -153,7 +219,7 @@ function humanDelta(iso, offsetMinutes) {
 
 function scheduleText(schedule) {
   if (!schedule) return '—';
-  const time = schedule.time || '05:00';
+  const time = `${schedule.time || '05:00'}${schedule.timeZone ? ` (${schedule.timeZone})` : ''}`;
   switch (schedule.kind) {
     case 'monthly_nth_weekday':
       return `ежемесячно: ${NTH_LABELS[String(schedule.nth)] || 'первый'} ${WEEKDAYS[schedule.weekday]}, ${time}`;
@@ -165,6 +231,78 @@ function scheduleText(schedule) {
     default:
       return `еженедельно: ${WEEKDAYS[schedule.weekday]}, ${time}`;
   }
+}
+
+let timeZoneCache;
+
+/** Пояса IANA браузера для выпадающего списка; null — браузер списка не даёт. */
+function timeZoneList() {
+  if (timeZoneCache !== undefined) return timeZoneCache;
+  timeZoneCache = null;
+  try {
+    if (typeof Intl !== 'undefined' && typeof Intl.supportedValuesOf === 'function') {
+      const list = Intl.supportedValuesOf('timeZone');
+      if (Array.isArray(list) && list.length) timeZoneCache = list;
+    }
+  } catch {
+    /* старый браузер — будет текстовое поле */
+  }
+  return timeZoneCache;
+}
+
+/**
+ * Путь, выбранный в пикере, — буквальный: «*», «?» и «[» в именах файлов не
+ * маска. В шаблоне «[x]» означает ровно символ x (договорённость К1), поэтому
+ * «*» → «[*]», «?» → «[?]», «[» → «[[]». Остальные символы не меняются.
+ */
+function literalPath(path) {
+  return String(path ?? '')
+    .split('/')
+    .map((segment) => segment.replace(/[*?[]/g, (char) => `[${char}]`))
+    .join('/');
+}
+
+/** Снимок черновика для сравнения «есть ли несохранённые правки». */
+function draftSnapshot(draft) {
+  return JSON.stringify({
+    name: draft.name,
+    enabled: draft.enabled,
+    schedule: draft.schedule,
+    targets: draft.targets,
+    excludes: draft.excludes,
+    options: draft.options,
+    map: draft.map,
+    excludeInput: String(draft.excludeInput || '').trim(),
+    targetInput: String(draft.targetInput || '').trim(),
+  });
+}
+
+/** Число из поля ввода; пустое или не число — null (поле не подменяет ввод). */
+function numberOrNull(text) {
+  const raw = String(text ?? '').trim();
+  if (!raw) return null;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : null;
+}
+
+const isIntIn = (value, min, max) => Number.isInteger(value) && value >= min && value <= max;
+
+/** Проверка полей редактора до отправки: текст ошибки или null. */
+function draftProblem(draft) {
+  const schedule = draft.schedule || {};
+  if (!/^([01]?\d|2[0-3]):[0-5]\d$/.test(String(schedule.time ?? '').trim())) return 'Укажите время вайпа';
+  if (schedule.kind === 'monthly_day' && !isIntIn(schedule.day, 1, 31)) return 'Укажите число месяца от 1 до 31';
+  if (schedule.kind === 'interval' && !isIntIn(schedule.intervalDays, 1, 365)) {
+    return 'Укажите интервал от 1 до 365 дней';
+  }
+  const map = draft.map || {};
+  if (map.size?.mode === 'fixed' && !isIntIn(map.size.value, 1000, 6000)) {
+    return 'Карта: укажите размер от 1000 до 6000';
+  }
+  if (map.seed?.mode === 'fixed' && !isIntIn(map.seed.value, 1, 2147483647)) {
+    return 'Карта: укажите сид от 1 до 2147483647';
+  }
+  return null;
 }
 
 function bytes(size) {
@@ -179,45 +317,63 @@ function bytes(size) {
 const STYLE_ID = 'rust-autowipe-styles';
 
 function ensureStyles() {
-  if (document.getElementById(STYLE_ID)) return;
   const style = document.createElement('style');
   style.id = STYLE_ID;
   style.textContent = `
-/* ============ Rust AutoWipe — design system v2 ============
-   Токены: палитра, spacing 4/8, радиусы 6/10, тени sm/md.
+/* ============ Rust AutoWipe — design system v3 ============
+   Цвета, радиус, тени и шрифт — токены панели Catalyst (hsl(var(--…))):
+   вкладка выглядит частью панели и меняется вместе с её темой и палитрой.
+   Второе значение в var() — запас для стенда без панели (значения Catalyst
+   v1.89.2). Своего фона и полей у вкладки нет: их даёт панель.
    Темы: data-rw-theme="dark" | "light" (ставится из JS по теме панели). */
 
 .rw-root{
   --rw-space-1:4px;--rw-space-2:8px;--rw-space-3:12px;--rw-space-4:16px;--rw-space-5:20px;--rw-space-6:24px;--rw-space-8:32px;
-  --rw-r-sm:6px;--rw-r-md:10px;
+  --rw-r-sm:var(--deck-radius,4px);--rw-r-md:var(--deck-radius,4px);
   --rw-fs-11:11px;--rw-fs-12:12px;--rw-fs-13:13px;--rw-fs-14:14px;--rw-fs-16:16px;--rw-fs-20:20px;
-  --rw-font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,Inter,sans-serif;
-  --rw-mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
-  display:flex;flex-direction:column;gap:var(--rw-space-4);
-  min-height:100%;min-width:0;padding:var(--rw-space-4);
-  font-family:var(--rw-font);font-size:var(--rw-fs-14);line-height:1.5;
-  color:var(--rw-text);background:var(--rw-bg);
-  -webkit-font-smoothing:antialiased;
+  --rw-mono:"JetBrains Mono Variable","JetBrains Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  display:flex;flex-direction:column;gap:var(--rw-space-2);
+  min-width:0;padding:0;
+  font-size:var(--rw-fs-14);line-height:1.5;
+  color:var(--rw-text);
 }
 .rw-root[data-rw-theme="dark"]{
-  --rw-bg:#0e131a;--rw-surface:#141a23;--rw-surface-2:#1b2430;--rw-surface-3:#222c3a;
-  --rw-border:#2a3441;--rw-border-strong:#3a4657;
-  --rw-text:#e6ebf2;--rw-text-dim:#93a1b3;
-  --rw-primary:#f97316;--rw-primary-ink:#1a1206;--rw-primary-soft:rgba(249,115,22,.14);
-  --rw-danger:#f87171;--rw-ok:#34d399;--rw-warn:#fbbf24;
-  --rw-shadow-sm:0 1px 2px rgba(0,0,0,.35);
-  --rw-shadow-md:0 8px 24px rgba(0,0,0,.4);
-  --rw-overlay:rgba(2,6,12,.6);
+  color-scheme:dark;
+  --rw-surface:hsl(var(--card,218 2% 11%));
+  --rw-surface-2:hsl(var(--surface-2,217 4% 17%));
+  --rw-surface-3:hsl(var(--surface-3,217 6% 21%));
+  --rw-border:hsl(var(--border,215 5% 21%));
+  --rw-border-strong:hsl(var(--muted-foreground,216 13% 63%) / .45);
+  --rw-text:hsl(var(--foreground,220 20% 93%));
+  --rw-text-dim:hsl(var(--muted-foreground,216 13% 63%));
+  --rw-primary:hsl(var(--primary,340 100% 62%));
+  --rw-primary-ink:hsl(var(--primary-foreground,217 2% 7%));
+  --rw-primary-soft:hsl(var(--primary,340 100% 62%) / .16);
+  --rw-danger:hsl(var(--danger,0 100% 68%));
+  --rw-ok:hsl(var(--success,153 60% 53%));
+  --rw-warn:hsl(var(--warning,39 100% 56%));
+  --rw-shadow-sm:var(--shadow-surface,0 1px 2px 0 rgb(0 0 0 / .4));
+  --rw-shadow-md:var(--shadow-elevated,0 14px 34px -14px rgb(0 0 0 / .6));
+  --rw-overlay:hsl(var(--scrim,217 20% 4% / .62));
 }
 .rw-root[data-rw-theme="light"]{
-  --rw-bg:#f7f9fc;--rw-surface:#ffffff;--rw-surface-2:#f1f5f9;--rw-surface-3:#e7edf4;
-  --rw-border:#dbe2ea;--rw-border-strong:#c3cedb;
-  --rw-text:#0f172a;--rw-text-dim:#5b6b7f;
-  --rw-primary:#ea580c;--rw-primary-ink:#ffffff;--rw-primary-soft:rgba(234,88,12,.12);
-  --rw-danger:#dc2626;--rw-ok:#15803d;--rw-warn:#b45309;
-  --rw-shadow-sm:0 1px 2px rgba(15,23,42,.06);
-  --rw-shadow-md:0 8px 24px rgba(15,23,42,.12);
-  --rw-overlay:rgba(15,23,42,.35);
+  color-scheme:light;
+  --rw-surface:hsl(var(--card,210 25% 99%));
+  --rw-surface-2:hsl(var(--surface-2,214 16% 92%));
+  --rw-surface-3:hsl(var(--surface-3,214 12% 86%));
+  --rw-border:hsl(var(--border,214 14% 85%));
+  --rw-border-strong:hsl(var(--muted-foreground,215 12% 42%) / .45);
+  --rw-text:hsl(var(--foreground,216 28% 12%));
+  --rw-text-dim:hsl(var(--muted-foreground,215 12% 42%));
+  --rw-primary:hsl(var(--primary,340 82% 47%));
+  --rw-primary-ink:hsl(var(--primary-foreground,0 0% 100%));
+  --rw-primary-soft:hsl(var(--primary,340 82% 47%) / .15);
+  --rw-danger:hsl(var(--danger,0 72% 48%));
+  --rw-ok:hsl(var(--success,153 55% 32%));
+  --rw-warn:hsl(var(--warning,39 92% 42%));
+  --rw-shadow-sm:var(--shadow-surface,0 1px 2px 0 rgb(14 17 22 / .06));
+  --rw-shadow-md:var(--shadow-elevated,0 10px 30px -12px rgb(14 17 22 / .22));
+  --rw-overlay:hsl(var(--scrim,217 20% 4% / .62));
 }
 .rw-root *{box-sizing:border-box}
 .rw-root :focus-visible{outline:2px solid var(--rw-primary);outline-offset:2px}
@@ -225,13 +381,13 @@ function ensureStyles() {
 /* ── Шапка ─────────────────────────────────────────────────────────── */
 .rw-root .rw-head{display:flex;align-items:flex-start;gap:var(--rw-space-3);flex-wrap:wrap}
 .rw-root .rw-title{display:flex;flex-direction:column;gap:2px;margin-right:auto;min-width:0}
-.rw-root .rw-title b{font-size:var(--rw-fs-20);line-height:1.25;letter-spacing:-.01em}
+.rw-root .rw-title h2{margin:0;font-size:var(--rw-fs-20);font-weight:600;line-height:1.25;letter-spacing:-.01em}
 .rw-root .rw-title span{font-size:var(--rw-fs-11);color:var(--rw-text-dim);text-transform:uppercase;letter-spacing:.1em}
 .rw-root .rw-chips{display:flex;align-items:center;gap:var(--rw-space-1);flex-wrap:wrap;min-width:0}
 .rw-root .rw-head-actions{display:flex;align-items:center;gap:var(--rw-space-2);flex-wrap:wrap}
 
 .rw-root .rw-chip{display:inline-flex;align-items:center;gap:6px;height:26px;padding:0 10px;
-  border:1px solid var(--rw-border);border-radius:999px;background:var(--rw-surface);
+  border:1px solid var(--rw-border);border-radius:var(--rw-r-sm);background:var(--rw-surface);
   font-size:var(--rw-fs-12);color:var(--rw-text-dim);white-space:nowrap;max-width:100%;overflow:hidden;text-overflow:ellipsis}
 .rw-root .rw-chip.ok{color:var(--rw-ok);border-color:color-mix(in srgb,var(--rw-ok) 45%,transparent);background:color-mix(in srgb,var(--rw-ok) 8%,var(--rw-surface))}
 .rw-root .rw-chip.warn{color:var(--rw-warn);border-color:color-mix(in srgb,var(--rw-warn) 45%,transparent);background:color-mix(in srgb,var(--rw-warn) 8%,var(--rw-surface))}
@@ -242,7 +398,7 @@ function ensureStyles() {
 .rw-root .rw-btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
   height:32px;padding:0 var(--rw-space-3);border-radius:var(--rw-r-sm);
   border:1px solid var(--rw-border);background:var(--rw-surface);color:var(--rw-text);
-  font:500 var(--rw-fs-13)/1 var(--rw-font);cursor:pointer;white-space:nowrap;
+  font:inherit;font-weight:500;font-size:var(--rw-fs-13);line-height:1;cursor:pointer;white-space:nowrap;
   transition:background .15s,border-color .15s,color .15s,box-shadow .15s,transform .06s}
 .rw-root .rw-btn:hover:not(:disabled){background:var(--rw-surface-2);border-color:var(--rw-border-strong)}
 .rw-root .rw-btn:active:not(:disabled){transform:translateY(1px)}
@@ -295,7 +451,7 @@ function ensureStyles() {
 .rw-root .rw-table tbody tr:hover{background:var(--rw-surface-2)}
 
 .rw-root .rw-badge{display:inline-flex;align-items:center;height:22px;padding:0 var(--rw-space-2);
-  border-radius:999px;font-size:var(--rw-fs-11);border:1px solid var(--rw-border);color:var(--rw-text-dim);white-space:nowrap}
+  border-radius:var(--rw-r-sm);font-size:var(--rw-fs-11);border:1px solid var(--rw-border);color:var(--rw-text-dim);white-space:nowrap}
 .rw-root .rw-badge.ok{color:var(--rw-ok);border-color:color-mix(in srgb,var(--rw-ok) 45%,transparent)}
 .rw-root .rw-badge.bad{color:var(--rw-danger);border-color:color-mix(in srgb,var(--rw-danger) 45%,transparent)}
 .rw-root .rw-badge.warn{color:var(--rw-warn);border-color:color-mix(in srgb,var(--rw-warn) 45%,transparent)}
@@ -312,6 +468,9 @@ function ensureStyles() {
 .rw-root .rw-modal-head>h3,.rw-root .rw-modal-head>div{flex:1;min-width:0}
 .rw-root .rw-modal-actions{display:flex;gap:var(--rw-space-2);justify-content:flex-end;
   margin-top:var(--rw-space-4);flex-wrap:wrap}
+.rw-root .rw-modal p{margin:0 0 var(--rw-space-2)}
+.rw-root .rw-list{margin:0 0 var(--rw-space-3);padding-left:1.25em;list-style:disc;
+  display:flex;flex-direction:column;gap:4px;font-size:var(--rw-fs-13)}
 
 /* ── Формы ─────────────────────────────────────────────────────────── */
 .rw-root .rw-form{display:grid;grid-template-columns:1fr 1fr;gap:var(--rw-space-3) var(--rw-space-4)}
@@ -320,8 +479,11 @@ function ensureStyles() {
 .rw-root .rw-field label{font-size:var(--rw-fs-12);font-weight:500;color:var(--rw-text-dim)}
 .rw-root .rw-field input,.rw-root .rw-field select,.rw-root .rw-field textarea,
 .rw-root .rw-path input{width:100%;min-height:34px;border:1px solid var(--rw-border);border-radius:var(--rw-r-sm);
-  background:var(--rw-surface-2);color:var(--rw-text);padding:6px 10px;font:inherit;font-size:var(--rw-fs-13);
+  background-color:var(--rw-surface-2);color:var(--rw-text);padding:6px 10px;font:inherit;font-size:var(--rw-fs-13);
   transition:border-color .15s,box-shadow .15s}
+/* Панель рисует стрелку select картинкой фона (appearance:none): не стираем её
+   сокращённым background и оставляем справа место. */
+.rw-root .rw-field select{padding-right:2rem}
 .rw-root .rw-field input:hover,.rw-root .rw-field select:hover,.rw-root .rw-field textarea:hover,
 .rw-root .rw-path input:hover{border-color:var(--rw-border-strong)}
 .rw-root .rw-field input:focus,.rw-root .rw-field select:focus,.rw-root .rw-field textarea:focus,
@@ -364,12 +526,15 @@ function ensureStyles() {
   padding:var(--rw-space-2) 10px;font-size:var(--rw-fs-12);color:var(--rw-text-dim);background:var(--rw-surface-2)}
 .rw-root .rw-notice.warn{color:var(--rw-warn);border-color:color-mix(in srgb,var(--rw-warn) 40%,transparent)}
 .rw-root .rw-notice.bad{color:var(--rw-danger);border-color:color-mix(in srgb,var(--rw-danger) 40%,transparent)}
-.rw-root .rw-toast{position:fixed;right:var(--rw-space-4);bottom:var(--rw-space-4);z-index:90;
+/* Тост — внизу по центру: справа внизу у панели окно загрузок, сверху — её шапка
+   и её собственные уведомления. */
+.rw-root .rw-toast{position:fixed;left:50%;bottom:var(--rw-space-4);transform:translateX(-50%);z-index:70;
   border:1px solid var(--rw-border);border-left:3px solid var(--rw-border-strong);border-radius:var(--rw-r-sm);
   padding:10px var(--rw-space-3);background:var(--rw-surface);color:var(--rw-text);
   box-shadow:var(--rw-shadow-md);max-width:min(420px,calc(100vw - 32px));font-size:var(--rw-fs-13)}
 .rw-root .rw-toast.ok{border-left-color:var(--rw-ok)}
 .rw-root .rw-toast.bad{border-left-color:var(--rw-danger)}
+.rw-root .rw-toast.warn{border-left-color:var(--rw-warn)}
 
 /* ── Пикер файлов ──────────────────────────────────────────────────── */
 .rw-root .rw-picker-list{border:1px solid var(--rw-border);border-radius:var(--rw-r-sm);max-height:340px;overflow:auto;margin-top:var(--rw-space-2)}
@@ -427,14 +592,22 @@ function ensureStyles() {
 .rw-root .rw-details summary{cursor:pointer;color:var(--rw-primary);font-size:var(--rw-fs-12)}
 .rw-root .rw-inline{display:inline-flex;align-items:center;gap:6px}
 .rw-root .rw-dim{color:var(--rw-text-dim)}
+.rw-root .rw-bad-text{color:var(--rw-danger)}
+.rw-root .rw-warn-text{color:var(--rw-warn)}
+
+/* Колонка «Детали» не должна сжиматься в ноль на узких экранах. */
+.rw-root .rw-table th:last-child,.rw-root .rw-table td:last-child{min-width:220px}
 
 /* ── Адаптив ───────────────────────────────────────────────────────── */
-@media (max-width:980px){
+/* Содержимое вкладки (.rw-body) перестраивается по ширине самой вкладки, а не
+   окна браузера: слева у панели меню, и на компьютере вкладка уже окна.
+   Окна, тост и формы в окнах привязаны к экрану — для них остаётся @media.
+   Окно (position:fixed) лежит вне .rw-body: контейнер ему не мешает. */
+.rw-root .rw-body{container:rw-tab / inline-size;display:flex;flex-direction:column;gap:var(--rw-space-2);min-width:0}
+@container rw-tab (max-width:980px){
   .rw-root .rw-grid{grid-template-columns:1fr}
-  .rw-root .rw-form{grid-template-columns:1fr}
 }
-@media (max-width:720px){
-  .rw-root{padding:var(--rw-space-3)}
+@container rw-tab (max-width:720px){
   .rw-root .rw-head{flex-direction:column;align-items:stretch;gap:var(--rw-space-2)}
   .rw-root .rw-title{margin-right:0}
   .rw-root .rw-head-actions{justify-content:flex-start}
@@ -445,22 +618,16 @@ function ensureStyles() {
   .rw-root .rw-step-label{min-width:0;overflow:hidden;text-overflow:ellipsis}
   .rw-root .rw-step-hint{display:none}
   .rw-root .rw-step-body{padding-left:var(--rw-space-2)}
-  .rw-root .rw-overlay{padding:0}
-  .rw-root .rw-modal,.rw-root .rw-modal.wide{width:100%;max-height:100dvh;min-height:100dvh;
-    border-radius:0;border:none;padding:var(--rw-space-4)}
   .rw-root .rw-table{min-width:520px}
-  .rw-root .rw-toast{left:var(--rw-space-2);right:var(--rw-space-2);bottom:var(--rw-space-2);max-width:none}
+  .rw-root .rw-meta{gap:4px 10px}
 }
-@media (max-width:420px){
-  .rw-root .rw-title b{font-size:var(--rw-fs-16)}
+@container rw-tab (max-width:420px){
+  .rw-root .rw-title h2{font-size:var(--rw-fs-16)}
   .rw-root .rw-actions{gap:var(--rw-space-1)}
   .rw-root .rw-actions .rw-btn{flex:1 1 100%}
-  .rw-root .rw-path{gap:4px;padding:4px}
-  .rw-root .rw-path-actions{gap:0}
 }
-
-@media (max-width:480px){
-  /* На телефоне время шага переносим под подпись, чтобы она не сжималась. */
+@container rw-tab (max-width:480px){
+  /* На узкой вкладке время шага переносим под подпись, чтобы она не сжималась. */
   .rw-root .rw-step>summary{
     grid-template-columns:1.9rem 1rem minmax(0,1fr) auto;
     grid-template-areas:"n s l m" ". . t .";
@@ -471,19 +638,49 @@ function ensureStyles() {
   .rw-root .rw-step-ms{grid-area:m}
   .rw-root .rw-step-clock{grid-area:t;justify-self:start;font-size:var(--rw-fs-11)}
 }
+@container rw-tab (max-width:560px){
+  /* Узкая вкладка: история — строками друг под другом, без второй прокрутки вбок,
+     и шаги получают всю ширину, а не ячейку в 220 px. */
+  .rw-root .rw-panel-block{overflow-x:visible}
+  .rw-root .rw-table,.rw-root .rw-table tbody,.rw-root .rw-table tr,.rw-root .rw-table td{display:block;min-width:0;width:auto}
+  .rw-root .rw-table thead{display:none}
+  .rw-root .rw-table tr{border-bottom:1px solid var(--rw-border);padding:var(--rw-space-2) 0}
+  .rw-root .rw-table tr:last-child{border-bottom:none}
+  .rw-root .rw-table td{border:none;padding:2px 0}
+  .rw-root .rw-table td[data-label]::before{content:attr(data-label) ": ";color:var(--rw-text-dim);font-size:var(--rw-fs-11)}
+  .rw-root .rw-table th:last-child,.rw-root .rw-table td:last-child{min-width:0}
+}
+@media (max-width:980px){
+  .rw-root .rw-form{grid-template-columns:1fr}
+}
+@media (max-width:720px){
+  .rw-root .rw-overlay{padding:0}
+  .rw-root .rw-modal,.rw-root .rw-modal.wide{width:100%;max-height:100dvh;min-height:100dvh;
+    border-radius:0;border:none;padding:var(--rw-space-4)}
+  .rw-root .rw-modal .rw-meta{gap:4px 10px}
+  /* Окно на телефоне само прокручивается — списки внутри без своей прокрутки. */
+  .rw-root .rw-modal .rw-paths,.rw-root .rw-modal .rw-pre{max-height:none}
+  .rw-root .rw-toast{left:var(--rw-space-2);right:var(--rw-space-2);bottom:var(--rw-space-2);transform:none;max-width:none}
+}
+@media (max-width:420px){
+  .rw-root .rw-path{gap:4px;padding:4px}
+  .rw-root .rw-path-actions{gap:0}
+}
 @media (prefers-reduced-motion:reduce){
   .rw-root *{transition:none !important}
 }
 
-/* Колонка «Детали» не должна сжиматься в ноль на узких экранах. */
-.rw-root .rw-table th:last-child,.rw-root .rw-table td:last-child{min-width:220px}
-@media (max-width:720px){
-  .rw-root .rw-meta{gap:4px 10px}
-}
 /* Футер модалки остаётся видимым при прокрутке формы. */
 .rw-root .rw-modal-actions{position:sticky;bottom:calc(var(--rw-space-4) * -1);
   padding:var(--rw-space-3) 0 var(--rw-space-1);background:var(--rw-surface)}
 `;
+  // Панель обновляет плагин «на лету», без перезагрузки страницы: <style>
+  // прошлой версии остаётся. Новая версия кладёт свои стили поверх.
+  const existing = document.getElementById(STYLE_ID);
+  if (existing) {
+    if (existing.textContent !== style.textContent) existing.textContent = style.textContent;
+    return;
+  }
   document.head.appendChild(style);
 }
 
@@ -497,7 +694,7 @@ const STEP_LABELS = {
   map: 'Сид и размер',
   expand: 'Поиск путей',
   delete: 'Удаление',
-  start: 'Запуск',
+  start: 'Запуск сервера',
   command: 'Команда в консоль',
   error: 'Ошибка',
   'restore-start': 'Восстановление запуска',
@@ -513,8 +710,8 @@ const DATA_LABELS = {
   deleted: 'Удалено',
   skipped: 'Пропущено',
   errors: 'Ошибок',
-  dryRun: 'Режим проверки',
-  started: 'Запуск',
+  dryRun: 'Проверка',
+  started: 'Сервер запущен',
   timeoutSec: 'Таймаут, с',
   command: 'Команда',
   message: 'Сообщение',
@@ -543,36 +740,55 @@ function fmtDataValue(value) {
   return String(value);
 }
 
-function fmtClock(iso, offsetMinutes) {
+function fmtClock(iso, offsetMinutes, zone) {
   const raw = String(iso || '');
   const t = Date.parse(raw);
   if (!Number.isFinite(t)) return raw.slice(11, 19) || '—';
+  const p = zoneParts(new Date(t), zone);
+  if (p) return `${p.hour}:${p.minute}:${p.second}.${String(new Date(t).getUTCMilliseconds()).padStart(3, '0')}`;
   const shifted = new Date(t + (Number(offsetMinutes) || 0) * 60000).toISOString();
   return `${shifted.slice(11, 19)}.${shifted.slice(20, 23)}`;
 }
 
-function buildKvList(data) {
+function buildKvList(data, { dryRun = false } = {}) {
   const rows = Object.entries(data).filter(
     ([key, value]) => key !== 'ms' && value !== null && value !== undefined && value !== '',
   );
   if (!rows.length) return null;
+  // В проверке ничего не удаляется: «Удалено: 2» там — «Было бы удалено: 2».
+  const label = (key) => (dryRun && key === 'deleted' ? 'Было бы удалено' : DATA_LABELS[key] || key);
   return el(
     'div',
     { class: 'rw-kv' },
     ...rows.flatMap(([key, value]) => [
-      el('span', { class: 'rw-kv-key', text: DATA_LABELS[key] || key }),
+      el('span', { class: 'rw-kv-key', text: label(key) }),
       el('span', { class: 'rw-kv-val', text: fmtDataValue(value) }),
     ]),
   );
 }
 
-function pathList(title, items) {
+function pathList(title, items, props = {}) {
   return el(
     'details',
-    { class: 'rw-step-paths' },
+    { class: 'rw-step-paths', ...props },
     el('summary', null, `${title} (${items.length})`),
     el('div', { class: 'rw-pre' }, items.join('\n')),
   );
+}
+
+/**
+ * Значок итога прогона в истории — по status записи. Запись появляется в
+ * начале вайпа (status 'running', поля ok ещё нет), а после падения панели её
+ * закрывают как 'interrupted'. У записей прошлых версий status нет — итог по ok.
+ */
+function runResult(run) {
+  const status = String(run?.status || '');
+  const check = Boolean(run?.dryRun);
+  if (status === 'running') return { kind: 'warn', text: check ? 'проверка: идёт' : 'идёт', running: true };
+  if (status === 'interrupted') return { kind: 'bad', text: check ? 'проверка: прервана' : 'прерван' };
+  const ok = status ? status === 'ok' : Boolean(run?.ok);
+  if (ok) return { kind: 'ok', text: check ? 'проверка: ок' : 'успешно' };
+  return { kind: 'bad', text: check ? 'проверка: ошибка' : 'ошибка' };
 }
 
 function blankDraft(serverId) {
@@ -619,21 +835,96 @@ class App {
       preview: null,
       toast: null,
       busy: false,
+      // Профили, по которым запрос уже в пути (запуск, проверка, правка):
+      // их кнопки неактивны, второе нажатие ничего не отправляет.
+      pending: new Set(),
     };
     this.toastTimer = null;
+    this.timers = new Set();
+    this.pollTimer = null;
+    this.openDetails = new Set();
+    this.editing = null;
+    this.modalChain = [];
+    this.lastModal = null;
+    this.disposed = false;
+  }
+
+  /** Профиль занят: запрос в пути или прогон идёт. */
+  isProfileBusy(profile) {
+    return Boolean(profile?.running) || this.state.pending.has(profile?.id);
+  }
+
+  /**
+   * Пока какой-то профиль выполняется, раз в 4 с перечитываем профили и
+   * историю — иначе «выполняется» висит до ручного «Обновить».
+   */
+  schedulePoll() {
+    if (this.pollTimer || this.disposed) return;
+    if (!this.state.profiles.some((profile) => profile.running)) return;
+    this.pollTimer = this.later(async () => {
+      this.pollTimer = null;
+      await this.refreshRuns({ quiet: true });
+      this.schedulePoll();
+    }, 4000);
   }
 
   apiBase() {
     return `servers/${encodeURIComponent(this.serverId)}`;
   }
 
+  /** Отложенное действие, которое снимается вместе с экземпляром (см. dispose). */
+  later(fn, ms) {
+    if (this.disposed) return null;
+    const id = setTimeout(() => {
+      this.timers.delete(id);
+      if (!this.disposed) fn();
+    }, ms);
+    this.timers.add(id);
+    return id;
+  }
+
+  /**
+   * Остановить экземпляр: снять таймеры и подписки. После этого render() и
+   * код после await ничего не рисуют. Нужно, когда панель переключает сервер
+   * на той же вкладке, обновляет плагин «на лету» или убирает вкладку.
+   */
+  dispose() {
+    if (this.disposed) return;
+    this.disposed = true;
+    liveApps.delete(this);
+    for (const id of this.timers) clearTimeout(id);
+    this.timers.clear();
+    if (this.toastTimer) clearTimeout(this.toastTimer);
+    if (this.clockTimer) clearInterval(this.clockTimer);
+    if (this.themeObserver) this.themeObserver.disconnect();
+    if (this.themeQuery && typeof this.themeQuery.removeEventListener === 'function') {
+      this.themeQuery.removeEventListener('change', this.onThemeQuery);
+    }
+    if (this.onBeforeUnload && typeof window !== 'undefined' && typeof window.removeEventListener === 'function') {
+      window.removeEventListener('beforeunload', this.onBeforeUnload);
+    }
+  }
+
   async start() {
     ensureStyles();
     this.applyTheme();
+    // Обновление страницы или закрытие вкладки браузера при несохранённом
+    // профиле — браузер спросит «Уйти со страницы?».
+    if (typeof window !== 'undefined' && typeof window.addEventListener === 'function') {
+      this.onBeforeUnload = (event) => {
+        if (!this.isDirty()) return undefined;
+        event.preventDefault();
+        event.returnValue = '';
+        return '';
+      };
+      window.addEventListener('beforeunload', this.onBeforeUnload);
+    }
     if (window.matchMedia) {
       const query = window.matchMedia('(prefers-color-scheme: dark)');
       if (typeof query.addEventListener === 'function') {
-        query.addEventListener('change', () => this.applyTheme());
+        this.themeQuery = query;
+        this.onThemeQuery = () => this.applyTheme();
+        query.addEventListener('change', this.onThemeQuery);
       }
     }
     // Панель переключает тему без перезагрузки: следим за атрибутами html.
@@ -646,9 +937,10 @@ class App {
     }
     this.render();
     await this.reload();
+    if (this.disposed) return;
     this.clockTimer = setInterval(() => {
-      if (!this.root.isConnected) {
-        clearInterval(this.clockTimer);
+      if (this.disposed || !this.root.isConnected) {
+        this.dispose();
         return;
       }
       const chip = this.root.querySelector('[data-rw-clock]');
@@ -663,11 +955,41 @@ class App {
   }
 
   panelClockText() {
-    const offset = Number(this.state.status?.clock?.offsetMinutes ?? 0);
-    const shifted = new Date(Date.now() + offset * 60000).toISOString();
-    return `${shifted.slice(11, 16)} · UTC${offset >= 0 ? '+' : '-'}${pad2(Math.floor(Math.abs(offset) / 60))}:${pad2(Math.abs(offset) % 60)}`;
+    const now = new Date();
+    const zone = this.panelZone();
+    const zoned = zoneOffsetMinutes(now, zone);
+    const offset = zoned ?? Number(this.state.status?.clock?.offsetMinutes ?? 0);
+    const parts = zoneParts(now, zone);
+    const time = parts
+      ? `${parts.hour}:${parts.minute}`
+      : new Date(now.getTime() + offset * 60000).toISOString().slice(11, 16);
+    return `${time} · UTC${offset >= 0 ? '+' : '-'}${pad2(Math.floor(Math.abs(offset) / 60))}:${pad2(Math.abs(offset) % 60)}`;
   }
 
+  /** Часовой пояс панели (имя IANA из status.clock), '' — неизвестен. */
+  panelZone() {
+    return String(this.state.status?.clock?.timezone || '');
+  }
+
+  /** Пояс, в котором показывать даты профиля: его собственный или пояс панели. */
+  profileZone(profile) {
+    return String(profile?.schedule?.timeZone || '') || this.panelZone();
+  }
+
+  /**
+   * Дата для человека в поясе zone. Каждая дата переводится со своим
+   * смещением: «Следующий запуск» после перехода на летнее время не
+   * сдвигается на час. Без пояса — старое смещение «на сейчас».
+   */
+  dateText(iso, zone) {
+    return formatZonedDate(iso, zone, Number(this.state.status?.clock?.offsetMinutes ?? 0));
+  }
+
+  /**
+   * Перечитать всё. Ошибка видна всегда: если данные уже есть, сверху
+   * появляется пометка, что на экране может быть старое состояние.
+   * Возвращает true, если данные обновились.
+   */
   async reload() {
     this.state.loading = true;
     this.state.error = null;
@@ -677,10 +999,11 @@ class App {
       this.state.loading = false;
       this.state.error = 'Вкладка открыта без сервера: плагин работает только в контексте сервера.';
       this.render();
-      return;
+      return false;
     }
 
     const base = this.apiBase();
+    let ok = true;
     try {
       const [status, profiles, presets] = await Promise.all([
         api(`${base}/status`),
@@ -691,36 +1014,209 @@ class App {
       this.state.server = status?.server || null;
       this.state.profiles = Array.isArray(profiles) ? profiles : [];
       this.state.presets = Array.isArray(presets) ? presets : [];
-      this.state.runs = await api(`${base}/runs?limit=60`);
+      const runs = await api(`${base}/runs?limit=60`);
+      this.state.runs = Array.isArray(runs) ? runs : [];
     } catch (error) {
       this.state.error = error.message;
+      ok = false;
     }
     this.state.loading = false;
     this.render();
+    this.schedulePoll();
+    return ok;
   }
 
-  async refreshRuns() {
+  async refreshRuns({ quiet = false } = {}) {
     const base = this.apiBase();
     try {
-      this.state.runs = await api(`${base}/runs?limit=60`);
-      this.state.profiles = await api(`${base}/profiles`);
+      const runs = await api(`${base}/runs?limit=60`);
+      const profiles = await api(`${base}/profiles`);
+      this.state.runs = Array.isArray(runs) ? runs : [];
+      this.state.profiles = Array.isArray(profiles) ? profiles : this.state.profiles;
+      this.state.error = null;
     } catch (error) {
-      this.toast('bad', error.message);
+      // Фоновый опрос не засыпает экран тостами: ошибка — пометкой сверху.
+      if (quiet) this.state.error = error.message;
+      else this.toast('bad', error.message);
     }
-    this.render();
+    // Фоновый опрос не пересобирает открытое окно (редактор, пикер): карточки
+    // под ним всё равно закрыты, а перерисовка мешала бы набирать текст.
+    if (!(quiet && (this.state.modal || this.state.preview))) this.render();
+    this.schedulePoll();
   }
 
   toast(type, text) {
+    if (this.disposed) return;
     this.state.toast = { type, text };
     this.render();
     if (this.toastTimer) clearTimeout(this.toastTimer);
     this.toastTimer = setTimeout(() => {
+      this.toastTimer = null;
+      if (this.disposed) return;
       this.state.toast = null;
       this.render();
     }, 4500);
   }
 
+  /**
+   * Что запомнить перед перерисовкой: прокрутку (окна, списков, страницы),
+   * поле с фокусом и открытое окно. Перерисовка пересобирает весь корень,
+   * и без этого форма на телефоне прыгала в начало, а фокус пропадал.
+   */
+  captureView() {
+    // modal — окно, которое сейчас на экране (нарисовано прошлым render), а не
+    // то, что уже лежит в state: иначе прокрутка редактора переедет в пикер.
+    const view = { modal: this.lastModal, scroll: {}, focus: null, outer: [] };
+    for (const node of markedNodes(this.root, 'data-rw-scroll')) {
+      view.scroll[node.getAttribute('data-rw-scroll')] = node.scrollTop || 0;
+    }
+    // Прокрутка панели вокруг вкладки: пока корень пуст, браузер прижимает её к нулю.
+    for (let node = this.root.parentNode; node && node.nodeType === 1; node = node.parentNode) {
+      if (node.scrollTop > 0) view.outer.push([node, node.scrollTop]);
+    }
+    const active = typeof document !== 'undefined' ? document.activeElement : null;
+    const key = active && typeof active.getAttribute === 'function' ? active.getAttribute('data-rw-key') : null;
+    if (key && typeof this.root.contains === 'function' && this.root.contains(active)) {
+      view.focus = { key };
+      try {
+        view.focus.start = active.selectionStart;
+        view.focus.end = active.selectionEnd;
+      } catch {
+        /* у числовых полей выделения нет */
+      }
+    }
+    return view;
+  }
+
+  restoreView(view) {
+    if (!view) return;
+    for (const [node, top] of view.outer) node.scrollTop = top;
+    // Прокрутку окна возвращаем, только если открыто то же самое окно.
+    if (view.modal && view.modal === (this.state.preview || this.state.modal)) {
+      for (const node of markedNodes(this.root, 'data-rw-scroll')) {
+        const top = view.scroll[node.getAttribute('data-rw-scroll')];
+        if (top) node.scrollTop = top;
+      }
+    }
+    if (view.focus) {
+      const target = markedNodes(this.root, 'data-rw-key').find(
+        (node) => node.getAttribute('data-rw-key') === view.focus.key,
+      );
+      if (target && typeof target.focus === 'function') {
+        target.focus({ preventScroll: true });
+        try {
+          if (view.focus.start != null && typeof target.setSelectionRange === 'function') {
+            target.setSelectionRange(view.focus.start, view.focus.end);
+          }
+        } catch {
+          /* поле без выделения */
+        }
+      }
+    }
+  }
+
+  /**
+   * Фокус при смене окна. Открылось новое окно — фокус внутрь (на поле или
+   * безопасную кнопку). Вернулись в предыдущее или закрыли все — фокус на
+   * кнопку, которая открыла закрытое окно. Цепочка окон — this.modalChain.
+   */
+  moveFocus(current, view) {
+    if (!current) {
+      const first = this.modalChain[0];
+      this.modalChain = [];
+      if (first?.opener) this.focusKey(first.opener);
+      return;
+    }
+    const index = this.modalChain.findIndex((item) => item.modal === current);
+    if (index >= 0) {
+      const next = this.modalChain[index + 1];
+      this.modalChain = this.modalChain.slice(0, index + 1);
+      if (next?.opener && this.focusKey(next.opener)) return;
+    } else {
+      this.modalChain.push({ modal: current, opener: view?.focus?.key || null });
+    }
+    const target = markedNodes(this.root, 'data-rw-autofocus')[0];
+    if (target && typeof target.focus === 'function') target.focus({ preventScroll: true });
+  }
+
+  focusKey(key) {
+    const target = markedNodes(this.root, 'data-rw-key').find((node) => node.getAttribute('data-rw-key') === key);
+    if (!target || typeof target.focus !== 'function') return false;
+    target.focus({ preventScroll: true });
+    return true;
+  }
+
+  /**
+   * Esc в окне: закрыть его, как «Отмена» или «Закрыть». Редактор с
+   * несохранёнными правками сначала спрашивает. Поле правки пути само
+   * обрабатывает Esc (отмена правки) — тогда окно не трогаем.
+   */
+  onModalKey(event) {
+    if (event.key !== 'Escape' || event.defaultPrevented) return;
+    event.preventDefault();
+    if (this.state.preview) {
+      this.state.preview = null;
+      this.render();
+      return;
+    }
+    const modal = this.state.modal;
+    if (!modal) return;
+    if (modal.type === 'confirm') {
+      if (typeof modal.onCancel === 'function') modal.onCancel();
+      else this.closeModal();
+      return;
+    }
+    if (modal.type === 'picker') {
+      this.backToEditor();
+      return;
+    }
+    if (modal.type === 'editor') this.requestCloseEditor();
+  }
+
+  /**
+   * «Закрыть», «Отмена» и Esc в редакторе: без правок — закрыть сразу, с
+   * несохранёнными правками — сначала спросить «Закрыть без сохранения?».
+   * «Отмена» в вопросе возвращает в тот же редактор с правками.
+   */
+  requestCloseEditor() {
+    const modal = this.state.modal;
+    if (!modal || modal.type !== 'editor' || !this.isDirty()) {
+      this.closeEditor();
+      return;
+    }
+    this.state.modal = {
+      type: 'confirm',
+      title: 'Закрыть без сохранения?',
+      items: ['Правки в этом профиле пропадут.'],
+      confirmLabel: 'Закрыть без сохранения',
+      onConfirm: () => this.closeEditor(),
+      onCancel: () => {
+        this.state.modal = modal;
+        this.render();
+      },
+    };
+    this.render();
+  }
+
+  /** Раскрытые блоки истории (шаги, списки путей) переживают перерисовку. */
+  detailsProps(key, extra = {}) {
+    return {
+      ...extra,
+      'data-rw-open': key,
+      open: this.openDetails.has(key) ? '' : null,
+      ontoggle: (event) => {
+        const node = event.currentTarget || event.target;
+        const open = typeof node?.open === 'boolean' ? node.open : Boolean(node?.hasAttribute?.('open'));
+        if (open) this.openDetails.add(key);
+        else this.openDetails.delete(key);
+      },
+    };
+  }
+
   render() {
+    // Остановленный экземпляр (сменили сервер, обновили плагин) больше не рисует.
+    if (this.disposed) return;
+    const view = this.captureView();
     clear(this.root);
     this.root.classList.add('rw-root');
 
@@ -736,15 +1232,32 @@ class App {
       return;
     }
 
+    const shownModal = this.state.preview || this.state.modal || null;
     append(this.root, [
-      this.renderHeader(),
-      this.renderMain(),
-      this.renderRuns(),
+      el(
+        'div',
+        { class: 'rw-body' },
+        this.renderHeader(),
+        // Данные уже есть, а обновить не вышло: молчать нельзя — на экране старое.
+        this.state.error && !this.state.loading
+          ? el(
+              'div',
+              { class: 'rw-notice bad', role: 'alert' },
+              `Не удалось обновить данные: ${this.state.error}. На экране может быть старое состояние. `,
+              el('button', { class: 'rw-btn small', type: 'button', onclick: () => this.reload() }, 'Повторить'),
+            )
+          : null,
+        this.renderMain(),
+        this.renderRuns(),
+      ),
       this.state.toast
-        ? el('div', { class: `rw-toast ${this.state.toast.type}` }, this.state.toast.text)
+        ? el('div', { class: `rw-toast ${this.state.toast.type}`, role: 'status', 'aria-live': 'polite' }, this.state.toast.text)
         : null,
       this.renderModal(),
     ]);
+    this.restoreView(view);
+    if (shownModal !== this.lastModal) this.moveFocus(shownModal, view);
+    this.lastModal = shownModal;
 
     // Инлайн-правка пути: после перерисовки возвращаем фокус в поле.
     const editInput = this.root.querySelector('[data-rw-path-edit]');
@@ -759,16 +1272,8 @@ class App {
 
   renderHeader() {
     const status = this.state.status || {};
+    // Имя и статус сервера уже в шапке панели над вкладкой — здесь их не повторяем.
     const chips = [];
-    if (this.state.server) {
-      chips.push(
-        el(
-          'span',
-          { class: 'rw-chip' },
-          `${this.state.server.name} · ${statusLabel(this.state.server.status)}`,
-        ),
-      );
-    }
     chips.push(el('span', { class: 'rw-chip', 'data-rw-clock': '1' }, this.panelClockText()));
     chips.push(
       status.hasApiKey
@@ -776,10 +1281,25 @@ class App {
         : el('span', { class: 'rw-chip bad' }, el('i', { class: 'rw-dot' }), 'Нет API-ключа'),
     );
     if (status.dryRun) {
-      chips.push(el('span', { class: 'rw-chip warn' }, 'Глобальный dry-run'));
+      chips.push(
+        el(
+          'span',
+          { class: 'rw-chip warn', title: 'Включено в настройках плагина' },
+          'Только проверки: вайпы ничего не удаляют',
+        ),
+      );
     }
     const warnState = status.wipeWarning && status.wipeWarning.state;
-    if (warnState && warnState.ok === false) {
+    if (status.wipeWarning && status.wipeWarning.enabled === false) {
+      // Рассылка выключена в настройках: старый «Чат: ок» от теста здесь только путает.
+      chips.push(
+        el(
+          'span',
+          { class: 'rw-chip warn', title: 'Включаются в настройках плагина' },
+          'Предупреждения в чате выключены',
+        ),
+      );
+    } else if (warnState && warnState.ok === false) {
       chips.push(
         el(
           'span',
@@ -807,8 +1327,15 @@ class App {
     if (status.schedulerEnabled === false) {
       chips.push(el('span', { class: 'rw-chip warn' }, 'Планировщик выключен'));
     }
+    // «Только просмотр» — только если нельзя ни менять, ни запускать.
     if (status.permissions && status.permissions.canManage === false) {
-      chips.push(el('span', { class: 'rw-chip' }, 'Только просмотр'));
+      chips.push(
+        el(
+          'span',
+          { class: 'rw-chip' },
+          status.permissions.canRun === true ? 'Можно запускать, нельзя менять профили' : 'Только просмотр',
+        ),
+      );
     }
     if (status.version) chips.push(el('span', { class: 'rw-chip' }, `v${status.version}`));
 
@@ -818,7 +1345,7 @@ class App {
       el(
         'div',
         { class: 'rw-title' },
-        el('b', null, 'Rust AutoWipe'),
+        el('h2', null, 'Rust AutoWipe'),
         el('span', null, 'расписание вайпов и удаление файлов'),
       ),
       el('div', { class: 'rw-chips' }, ...chips),
@@ -861,14 +1388,10 @@ class App {
       canManage
         ? el(
             'button',
-            { class: 'rw-btn primary', onclick: () => this.openEditor(null) },
+            { class: 'rw-btn primary', 'data-rw-key': 'new-profile', onclick: () => this.openEditor(null) },
             '+ Новый профиль',
           )
-        : el(
-            'span',
-            { class: 'rw-dim' },
-            'Изменение профилей — только у роли с rust-autowipe.manage',
-          ),
+        : el('span', { class: 'rw-dim' }, 'У вас нет права менять профили'),
     );
 
     const body = [];
@@ -877,26 +1400,43 @@ class App {
         el(
           'div',
           { class: 'rw-empty' },
-          'Профилей пока нет. Создайте профиль: расписание и файлы/каталоги, которые удаляются при вайпе этого сервера.',
+          canManage
+            ? 'Профилей пока нет. Создайте профиль: расписание и файлы/каталоги, которые удаляются при вайпе этого сервера.'
+            : 'Профилей пока нет.',
         ),
       );
     } else {
       for (const profile of profiles) body.push(this.renderProfileCard(profile, { canManage, canRun }));
     }
 
-    return el('main', { class: 'rw-main' }, header, ...body);
+    // <section>, а не <main>: главная область страницы — у панели, вкладка внутри неё.
+    return el('section', { class: 'rw-main' }, header, ...body);
   }
 
   renderProfileCard(profile, { canManage, canRun }) {
-    const offset = Number(this.state.status?.clock?.offsetMinutes ?? 0);
+    const zone = this.profileZone(profile);
+    // Итог настоящего вайпа (lastRun*) и итог проверки (lastCheck*) — разные
+    // вещи: проверка не должна затирать ошибку ночного вайпа (К4).
     const statusChip = profile.running
       ? el('span', { class: 'rw-badge warn' }, 'выполняется')
       : profile.lastRunStatus === 'ok'
-        ? el('span', { class: 'rw-badge ok' }, 'последний: ок')
+        ? el('span', { class: 'rw-badge ok' }, 'последний вайп: ок')
         : profile.lastRunStatus === 'failed'
-          ? el('span', { class: 'rw-badge bad' }, 'последний: ошибка')
-          : el('span', { class: 'rw-badge' }, 'ещё не запускался');
+          ? el('span', { class: 'rw-badge bad' }, 'последний вайп: ошибка')
+          : el('span', { class: 'rw-badge' }, 'вайпа ещё не было');
+    // Профиль с «Только проверка» (или глобальная проверка) ничего не удаляет —
+    // это должно быть видно на карточке.
+    const checkOnly = Boolean(profile.options?.dryRun) || this.state.status?.dryRun === true;
+    const checkLine = profile.lastCheckAt
+      ? el(
+          'span',
+          { class: profile.lastCheckStatus === 'failed' ? 'rw-bad-text' : null },
+          `Проверка: ${profile.lastCheckStatus === 'failed' ? 'ошибка' : 'ок'}, ${this.dateText(profile.lastCheckAt, zone)}`,
+        )
+      : null;
 
+    // Пока запрос в пути или прогон идёт, кнопки профиля неактивны; надписи не меняются.
+    const profileBusy = this.isProfileBusy(profile);
     const actions = [];
     if (canRun) {
       actions.push(
@@ -904,26 +1444,26 @@ class App {
           'button',
           {
             class: 'rw-btn',
-            disabled: profile.running || this.state.busy,
-            onclick: () => this.runProfile(profile),
-          },
-          'Запустить сейчас',
-        ),
-      );
-      actions.push(
-        el(
-          'button',
-          {
-            class: 'rw-btn',
-            disabled: this.state.busy,
+            'data-rw-key': `check:${profile.id}`,
+            disabled: this.state.busy || profileBusy,
+            title: 'Проверочный прогон: ничего не удаляет и не останавливает сервер',
             onclick: () => this.runProfile(profile, true),
           },
-          'Проверка (dry-run)',
+          'Проверка',
         ),
       );
     }
     actions.push(
-      el('button', { class: 'rw-btn', disabled: this.state.busy, onclick: () => this.previewProfile(profile) }, 'Что будет удалено'),
+      el(
+        'button',
+        {
+          class: 'rw-btn',
+          'data-rw-key': `preview:${profile.id}`,
+          disabled: this.state.busy,
+          onclick: () => this.previewProfile(profile),
+        },
+        'Что будет удалено',
+      ),
     );
     if (canRun) {
       actions.push(
@@ -940,22 +1480,50 @@ class App {
       );
     }
     if (canManage) {
-      actions.push(el('button', { class: 'rw-btn', onclick: () => this.openEditor(profile) }, 'Изменить'));
       actions.push(
         el(
           'button',
-          {
-            class: 'rw-btn',
-            onclick: () => this.toggleProfile(profile),
-          },
-          profile.enabled ? 'Выключить' : 'Включить',
+          { class: 'rw-btn', 'data-rw-key': `edit:${profile.id}`, disabled: profileBusy, onclick: () => this.openEditor(profile) },
+          'Изменить',
         ),
       );
       actions.push(
         el(
           'button',
           {
+            class: 'rw-btn',
+            disabled: profileBusy,
+            onclick: () => this.toggleProfile(profile),
+          },
+          profile.enabled ? 'Выключить' : 'Включить',
+        ),
+      );
+    }
+    // Боевой вайп — опасное действие: красная кнопка в конце ряда, подальше
+    // от безопасной проверки, и запуск только после окна подтверждения.
+    if (canRun) {
+      actions.push(
+        el(
+          'button',
+          {
             class: 'rw-btn danger',
+            'data-rw-key': `run:${profile.id}`,
+            title: 'Остановить сервер и удалить файлы профиля прямо сейчас',
+            disabled: profileBusy || this.state.busy,
+            onclick: () => this.confirmRun(profile),
+          },
+          'Вайп сейчас',
+        ),
+      );
+    }
+    if (canManage) {
+      actions.push(
+        el(
+          'button',
+          {
+            class: 'rw-btn danger',
+            'data-rw-key': `delete:${profile.id}`,
+            disabled: profileBusy,
             onclick: () => this.confirmDelete(profile),
           },
           'Удалить',
@@ -971,7 +1539,7 @@ class App {
         { class: 'rw-card-head' },
         el('span', {
           class: 'rw-dot',
-          style: { background: profile.enabled ? 'var(--rw-ok)' : 'rgba(148,163,184,.5)' },
+          style: { background: profile.enabled ? 'var(--rw-ok)' : 'var(--rw-text-dim)' },
         }),
         el(
           'div',
@@ -985,6 +1553,18 @@ class App {
             el('span', null, `путей: ${(profile.targets || []).length}`),
             profile.mapText ? el('span', null, profile.mapText) : null,
             el('span', null, profile.enabled ? 'включён' : 'выключен'),
+            checkOnly
+              ? el(
+                  'span',
+                  {
+                    class: 'rw-badge warn',
+                    title: profile.options?.dryRun
+                      ? 'В профиле включено «Только проверка»: вайпы ничего не удаляют'
+                      : 'В настройках плагина включены только проверки: вайпы ничего не удаляют',
+                  },
+                  'только проверка',
+                )
+              : null,
           ),
         ),
         statusChip,
@@ -992,26 +1572,78 @@ class App {
       el(
         'div',
         { class: 'rw-meta' },
-        el(
-          'span',
-          null,
-          'Следующий запуск: ',
-          el('b', null, formatPanelDate(profile.nextRunAt, offset)),
-          profile.nextRunAt ? ` (${humanDelta(profile.nextRunAt)})` : '',
-        ),
+        // Идущий прогон — отдельно от даты следующего срока: backend сдвигает её ещё до вайпа.
+        profile.running
+          ? el('span', { class: 'rw-warn-text' }, this.runningIsCheck(profile) ? 'Идёт проверка' : 'Идёт вайп')
+          : null,
+        this.nextRunLine(profile, zone),
         profile.lastRunAt
-          ? el('span', null, `Последний: ${formatPanelDate(profile.lastRunAt, offset)}`)
+          ? el('span', null, `Последний: ${this.dateText(profile.lastRunAt, zone)}`)
           : null,
         profile.lastError
-          ? el('span', { style: { color: 'var(--rw-danger)' } }, `Ошибка: ${profile.lastError}`)
+          ? el('span', { class: 'rw-bad-text' }, `Ошибка вайпа: ${profile.lastError}`)
+          : null,
+        // Пропущенный плановый вайп — из ответа профилей (lastSkippedAt, lastSkipReason).
+        profile.lastSkippedAt
+          ? el(
+              'span',
+              { class: 'rw-warn-text' },
+              `Пропущен: ${this.dateText(profile.lastSkippedAt, zone)}` +
+                (profile.lastSkipReason ? ` — ${profile.lastSkipReason}` : ''),
+            )
+          : null,
+        checkLine,
+        profile.lastCheckError
+          ? el('span', { class: 'rw-bad-text' }, `Ошибка проверки: ${profile.lastCheckError}`)
           : null,
       ),
       el('div', { class: 'rw-actions' }, ...actions),
     );
   }
 
+  /**
+   * «Следующий запуск» — только если вайп правда запланирован. Выключенный
+   * профиль и выключенный планировщик тик не трогает, а прошедшая дата —
+   * это пропущенный вайп, а не «7 дн назад».
+   */
+  nextRunLine(profile, zone) {
+    if (profile.enabled === false) return el('span', null, 'Не запланирован: профиль выключен');
+    if (this.state.status?.schedulerEnabled === false) {
+      return el('span', null, 'Не запланирован: планировщик выключен в настройках плагина');
+    }
+    const at = profile.nextRunAt ? new Date(profile.nextRunAt).getTime() : NaN;
+    // Тик идёт раз в минуту: пару минут опоздания не считаем пропуском.
+    const late = Number.isFinite(at) && Date.now() - at > 2 * 60000;
+    let tail = '';
+    if (Number.isFinite(at)) {
+      // Идущий прогон показан отдельно («Идёт вайп»). «Идёт сейчас» — только если
+      // наступил сам этот срок; иначе это уже следующий срок с обычным отсчётом.
+      if (profile.running && at <= Date.now()) tail = ' (идёт сейчас)';
+      else if (late) tail = ' (просрочен: время прошло, а вайпа не было)';
+      else tail = ` (${humanDelta(profile.nextRunAt)})`;
+    }
+    return el(
+      'span',
+      { class: late && !profile.running ? 'rw-warn-text' : null },
+      'Следующий запуск: ',
+      el('b', null, this.dateText(profile.nextRunAt, zone)),
+      tail,
+    );
+  }
+
+  /**
+   * Идёт проверка, а не вайп: по записи прогона в истории (status 'running');
+   * пока её нет — по только что нажатой кнопке или по «только проверка».
+   */
+  runningIsCheck(profile) {
+    const record = this.state.runs.find((run) => run.profileId === profile.id && run.status === 'running');
+    if (record) return Boolean(record.dryRun);
+    if (typeof profile.runningCheck === 'boolean') return profile.runningCheck;
+    return Boolean(profile.options?.dryRun) || this.state.status?.dryRun === true;
+  }
+
   /** Один шаг вайпа: сводная строка + раскрытие с полным текстом и метриками. */
-  renderStep(step, index, run, offset) {
+  renderStep(step, index, run, offset, zone) {
     const ok = step.ok !== false;
     const label = STEP_LABELS[step.action] || step.action || 'шаг';
     const data = step.data && typeof step.data === 'object' ? step.data : {};
@@ -1020,25 +1652,35 @@ class App {
     const detailText = sentence(step.detail);
     const head = [
       el('span', { class: 'rw-step-n', text: pad2(index + 1) }),
-      el('span', { class: 'rw-step-clock', text: fmtClock(step.at, offset) }),
+      el('span', { class: 'rw-step-clock', text: fmtClock(step.at, offset, zone) }),
       el('span', { class: ok ? 'rw-step-ok' : 'rw-step-bad', text: ok ? '✓' : '✕' }),
       el('span', { class: ok ? 'rw-step-label' : 'rw-step-label bad' }, label),
       detailText ? el('span', { class: 'rw-step-hint', title: detailText, text: detailText }) : null,
       ms !== null ? el('span', { class: 'rw-step-ms', text: fmtDuration(ms) }) : null,
     ];
 
-    const body = [detailText ? el('div', { class: 'rw-step-detail' }, detailText) : null, buildKvList(data)];
+    const dryRun = Boolean(run?.dryRun);
+    const body = [
+      detailText ? el('div', { class: 'rw-step-detail' }, detailText) : null,
+      buildKvList(data, { dryRun }),
+    ];
 
     if (step.action === 'delete' && run) {
       const lists = [];
       const deleted = Array.isArray(run.deleted) ? run.deleted : [];
-      if (deleted.length) lists.push(pathList('Удалённые пути', deleted));
+      const runKey = run.id || run.startedAt || '';
+      if (deleted.length) {
+        lists.push(
+          pathList(dryRun ? 'Было бы удалено' : 'Удалённые пути', deleted, this.detailsProps(`deleted:${runKey}`)),
+        );
+      }
       const skipped = Array.isArray(run.skipped) ? run.skipped : [];
       if (skipped.length) {
         lists.push(
           pathList(
             'Пропущенные пути',
             skipped.map((item) => `${item.path}${item.reason ? ` — ${sentence(item.reason)}` : ''}`),
+            this.detailsProps(`skipped:${runKey}`),
           ),
         );
       }
@@ -1049,7 +1691,7 @@ class App {
 
     return el(
       'details',
-      { class: 'rw-step' },
+      this.detailsProps(`step:${run?.id || run?.startedAt || ''}:${index}`, { class: 'rw-step' }),
       el('summary', null, ...head),
       children.length ? el('div', { class: 'rw-step-body' }, ...children) : null,
     );
@@ -1057,35 +1699,47 @@ class App {
 
   renderRuns() {
     const offset = Number(this.state.status?.clock?.offsetMinutes ?? 0);
-    const rows = this.state.runs.slice(0, 30).map((run) =>
-      el(
+    const panelZone = this.panelZone();
+    // Время прогона — в поясе его профиля (как в карточке); пояс подписан,
+    // если он не совпадает с поясом панели.
+    const zoneOf = (run) => this.profileZone(this.state.profiles.find((item) => item.id === run.profileId));
+    const rows = this.state.runs.slice(0, 30).map((run) => {
+      const zone = zoneOf(run);
+      const result = runResult(run);
+      const count = run.deletedCount ?? (run.deleted || []).length;
+      const stepTexts = new Set(
+        (run.steps || []).flatMap((step) => [String(step.detail ?? ''), String(step.data?.message ?? '')]).filter(Boolean),
+      );
+      return el(
         'tr',
         null,
-        el('td', { text: formatPanelDate(run.startedAt, offset) }),
-        el('td', { text: run.profileName || run.profileId }),
-        el('td', { text: run.trigger === 'schedule' ? 'расписание' : 'вручную' }),
         el(
           'td',
-          null,
-          el(
-            'span',
-            { class: `rw-badge ${run.ok ? 'ok' : 'bad'}` },
-            run.dryRun ? 'dry-run' : run.ok ? 'успешно' : 'ошибка',
-          ),
+          { 'data-label': 'Когда' },
+          this.dateText(run.startedAt, zone),
+          zone && zone !== panelZone ? el('span', { class: 'rw-dim' }, ` (${zone})`) : null,
         ),
-        el('td', { text: String(run.deletedCount ?? (run.deleted || []).length) }),
+        el('td', { 'data-label': 'Профиль', text: run.profileName || run.profileId }),
+        el('td', { 'data-label': 'Источник', text: run.trigger === 'schedule' ? 'расписание' : 'вручную' }),
+        el('td', { 'data-label': 'Результат' }, el('span', { class: `rw-badge ${result.kind}` }, result.text)),
+        el('td', {
+          'data-label': 'Удалено',
+          // У идущего прогона итога ещё нет.
+          text: result.running ? '—' : run.dryRun ? `было бы ${count}` : String(count),
+        }),
         el(
           'td',
           null,
           el(
             'details',
-            { class: 'rw-details' },
+            this.detailsProps(`run:${run.id || run.startedAt}`, { class: 'rw-details' }),
             el('summary', null, `шаги (${(run.steps || []).length})`),
             el(
               'div',
               { class: 'rw-steps' },
-              ...(run.steps || []).map((step, index) => this.renderStep(step, index, run, offset)),
-              ...(run.errors || []).map((error) =>
+              ...(run.steps || []).map((step, index) => this.renderStep(step, index, run, offset, zone)),
+              // Ошибка, которая уже есть в шаге «Ошибка», второй раз не повторяется.
+              ...(run.errors || []).filter((error) => !stepTexts.has(String(error))).map((error) =>
                 el(
                   'div',
                   { class: 'rw-step' },
@@ -1102,8 +1756,8 @@ class App {
             ),
           ),
         ),
-      ),
-    );
+      );
+    });
 
     return el(
       'div',
@@ -1111,7 +1765,7 @@ class App {
       el(
         'h3',
         { style: { display: 'flex', alignItems: 'center', gap: '10px' } },
-        'История запусков',
+        'История прогонов',
         el(
           'button',
           { class: 'rw-btn small', style: { marginLeft: 'auto', textTransform: 'none' }, onclick: () => this.refreshRuns() },
@@ -1130,7 +1784,7 @@ class App {
                 null,
                 el('th', null, 'Когда'),
                 el('th', null, 'Профиль'),
-                el('th', null, 'Запуск'),
+                el('th', null, 'Источник'),
                 el('th', null, 'Результат'),
                 el('th', null, 'Удалено'),
                 el('th', null, 'Детали'),
@@ -1138,7 +1792,7 @@ class App {
             ),
             el('tbody', null, ...rows),
           )
-        : el('div', { class: 'rw-dim' }, 'Запусков ещё не было.'),
+        : el('div', { class: 'rw-dim' }, 'Прогонов ещё не было.'),
     );
   }
 
@@ -1156,7 +1810,7 @@ class App {
     const picker = this.state.modal;
     if (!picker || picker.type !== 'picker') return;
     this.state.pathEdit = null;
-    this.state.modal = { type: 'editor', draft: picker.draft };
+    this.state.modal = picker.parent || { type: 'editor', draft: picker.draft };
     this.render();
   }
 
@@ -1249,31 +1903,43 @@ class App {
   }
 
   renderConfirmModal() {
-    const { title, text, confirmLabel, onConfirm } = this.state.modal;
+    const { title, text, items, note, confirmLabel, onConfirm, onCancel } = this.state.modal;
+    // «Отмена» может вернуть в предыдущее окно (например, в пикер с отметками).
+    const cancel = () => (typeof onCancel === 'function' ? onCancel() : this.closeModal());
     return el(
       'div',
       {
         class: 'rw-overlay',
+        'data-rw-scroll': 'overlay',
+        onkeydown: (event) => this.onModalKey(event),
         onclick: (event) => {
-          if (event.target === event.currentTarget) this.closeModal();
+          if (event.target === event.currentTarget) cancel();
         },
       },
       el(
         'div',
-        { class: 'rw-modal' },
+        { class: 'rw-modal', 'data-rw-scroll': 'modal', role: 'dialog', 'aria-modal': 'true', 'aria-label': title },
         el('div', { class: 'rw-modal-head' }, el('h3', null, title)),
-        el('p', null, text),
+        text ? el('p', null, text) : null,
+        // Последствия — обычным списком, по одной мысли в строке.
+        Array.isArray(items) && items.length
+          ? el('ul', { class: 'rw-list' }, ...items.map((item) => el('li', null, item)))
+          : null,
+        note ? el('p', { class: 'rw-hint' }, note) : null,
         el(
           'div',
           { class: 'rw-modal-actions' },
-          el('button', { class: 'rw-btn', onclick: () => this.closeModal() }, 'Отмена'),
+          el('button', { class: 'rw-btn', 'data-rw-autofocus': '', onclick: cancel }, 'Отмена'),
           el(
             'button',
             {
               class: 'rw-btn danger',
               onclick: async () => {
-                this.closeModal();
-                await onConfirm();
+                this.state.modal = null;
+                this.state.pathEdit = null;
+                const result = onConfirm();
+                this.render();
+                await result;
               },
             },
             confirmLabel || 'Удалить',
@@ -1296,7 +1962,20 @@ class App {
     draft.serverId = this.serverId;
     this.state.pathEdit = null;
     this.state.modal = { type: 'editor', draft };
+    // Снимок — чтобы понять, есть ли несохранённые правки.
+    this.editing = { draft, initial: draftSnapshot(draft) };
     this.render();
+  }
+
+  /** Закрыть редактор сразу: правок нет или их сознательно бросили (см. requestCloseEditor). */
+  closeEditor() {
+    this.editing = null;
+    this.closeModal();
+  }
+
+  /** Есть ли в открытом редакторе несохранённые правки. */
+  isDirty() {
+    return Boolean(this.editing) && draftSnapshot(this.editing.draft) !== this.editing.initial;
   }
 
   draft() {
@@ -1315,6 +1994,7 @@ class App {
     const seedMode = el(
       'select',
       {
+        'data-rw-key': 'seed-mode',
         onchange: (event) => {
           seed.mode = event.target.value;
           rerender();
@@ -1329,6 +2009,7 @@ class App {
     const sizeMode = el(
       'select',
       {
+        'data-rw-key': 'size-mode',
         onchange: (event) => {
           size.mode = event.target.value;
           rerender();
@@ -1345,6 +2026,7 @@ class App {
         field(
           'Значение сида (1…2147483647)',
           el('input', {
+            'data-rw-key': 'seed-value',
             type: 'number',
             min: '1',
             value: seed.value == null ? '' : String(seed.value),
@@ -1364,6 +2046,7 @@ class App {
           el(
             'textarea',
             {
+              'data-rw-key': 'seed-list',
               placeholder: '123456789, 987654321, 555000111',
               oninput: (event) => {
                 seed.values = event.target.value
@@ -1385,12 +2068,14 @@ class App {
         field(
           'Размер (1000…6000)',
           el('input', {
+            'data-rw-key': 'size-value',
             type: 'number',
             min: '1000',
             max: '6000',
-            value: size.value == null ? '3000' : String(size.value),
+            // Пустое поле остаётся пустым: показываем то, что уйдёт в профиль.
+            value: size.value == null ? '' : String(size.value),
             oninput: (event) => {
-              size.value = Number(event.target.value) || null;
+              size.value = numberOrNull(event.target.value);
             },
           }),
         ),
@@ -1452,6 +2137,7 @@ class App {
           el('input', {
             type: 'text',
             value: map.vars.seed,
+            'data-rw-key': 'var-seed',
             placeholder: 'WORLD_SEED',
             oninput: (event) => {
               map.vars.seed = event.target.value.trim();
@@ -1463,6 +2149,7 @@ class App {
           el('input', {
             type: 'text',
             value: map.vars.size,
+            'data-rw-key': 'var-size',
             placeholder: 'WORLD_SIZE',
             oninput: (event) => {
               map.vars.size = event.target.value.trim();
@@ -1483,8 +2170,8 @@ class App {
       el(
         'span',
         { class: 'rw-hint' },
-        'Значения записываются в переменные шаблона перед запуском (нужно право server.startup у API-ключа). ' +
-          'Если в startup шаблона нет {{WORLD_SEED}} / {{WORLD_SIZE}} — карта не изменится.',
+        'Сид и размер записываются в переменные сервера перед запуском. API-ключу нужно право менять ' +
+          'параметры запуска сервера. Если команда запуска сервера эти переменные не использует, карта не изменится.',
       ),
     );
   }
@@ -1508,6 +2195,49 @@ class App {
     }
   }
 
+  /** Поле «Часовой пояс»: список поясов браузера, без списка — текстовое поле. */
+  renderTimeZoneField(draft) {
+    const current = typeof draft.schedule.timeZone === 'string' ? draft.schedule.timeZone : '';
+    const panelZone = this.state.status?.clock?.timezone;
+    const zones = timeZoneList();
+    let control;
+    if (zones) {
+      // UTC есть не в каждом списке браузера. Сохранённый пояс не должен
+      // пропасть, даже если браузер называет его по-другому.
+      const values = [...zones];
+      if (!values.includes('UTC')) values.unshift('UTC');
+      if (current && !values.includes(current)) values.unshift(current);
+      control = el(
+        'select',
+        {
+          'data-rw-key': 'timezone',
+          onchange: (event) => {
+            draft.schedule.timeZone = event.target.value;
+          },
+        },
+        el('option', { value: '', selected: current ? null : '' }, panelZone ? `Пояс панели (${panelZone})` : 'Пояс панели'),
+        ...values.map((zone) => el('option', { value: zone, selected: zone === current ? '' : null }, zone)),
+      );
+    } else {
+      control = el('input', {
+        'data-rw-key': 'timezone',
+        type: 'text',
+        value: current,
+        placeholder: 'Europe/Moscow',
+        oninput: (event) => {
+          draft.schedule.timeZone = event.target.value.trim();
+        },
+      });
+    }
+    return el(
+      'div',
+      { class: 'rw-field' },
+      el('label', null, 'Часовой пояс'),
+      control,
+      zones ? null : el('span', { class: 'rw-hint' }, 'Например Europe/Moscow. Пусто — пояс панели.'),
+    );
+  }
+
   renderEditorModal() {
     const draft = this.draft();
     if (!draft) return null;
@@ -1518,6 +2248,7 @@ class App {
     const kindSelect = el(
       'select',
       {
+        'data-rw-key': 'kind',
         onchange: (event) => {
           draft.schedule.kind = event.target.value;
           this.render();
@@ -1540,6 +2271,7 @@ class App {
             el(
               'select',
               {
+                'data-rw-key': 'nth',
                 onchange: (event) => {
                   draft.schedule.nth = Number(event.target.value);
                   this.render();
@@ -1564,6 +2296,7 @@ class App {
           el(
             'select',
             {
+              'data-rw-key': 'weekday',
               onchange: (event) => {
                 draft.schedule.weekday = Number(event.target.value);
                 this.render();
@@ -1589,10 +2322,11 @@ class App {
           el('input', {
             type: 'number',
             min: '1',
+            'data-rw-key': 'day',
             max: '31',
-            value: String(schedule.day ?? 1),
+            value: schedule.day == null ? '' : String(schedule.day),
             oninput: (event) => {
-              draft.schedule.day = Number(event.target.value) || 1;
+              draft.schedule.day = numberOrNull(event.target.value);
             },
           }),
           el('span', { class: 'rw-hint' }, 'В коротких месяцах число поджимается к последнему дню.'),
@@ -1608,10 +2342,11 @@ class App {
           el('input', {
             type: 'number',
             min: '1',
+            'data-rw-key': 'interval',
             max: '365',
-            value: String(schedule.intervalDays ?? 7),
+            value: schedule.intervalDays == null ? '' : String(schedule.intervalDays),
             oninput: (event) => {
-              draft.schedule.intervalDays = Number(event.target.value) || 7;
+              draft.schedule.intervalDays = numberOrNull(event.target.value);
             },
           }),
         ),
@@ -1622,6 +2357,7 @@ class App {
           { class: 'rw-field' },
           el('label', null, 'Точка отсчёта (необязательно)'),
           el('input', {
+            'data-rw-key': 'anchor',
             type: 'date',
             value: schedule.anchorDate || '',
             oninput: (event) => {
@@ -1635,29 +2371,31 @@ class App {
       el(
         'div',
         { class: 'rw-field' },
-        el('label', null, 'Время (часовой пояс панели)'),
+        el('label', null, 'Время'),
         el('input', {
+          'data-rw-key': 'time',
           type: 'time',
-          value: schedule.time || '05:00',
+          value: schedule.time ?? '',
           oninput: (event) => {
-            draft.schedule.time = event.target.value || '05:00';
+            draft.schedule.time = event.target.value;
           },
         }),
       ),
     );
+    scheduleFields.push(this.renderTimeZoneField(draft));
 
     const pathList = (list, kind) => {
       const edit = this.state.pathEdit;
       if (!list.length) {
         return el(
           'div',
-          { class: 'rw-paths' },
+          { class: 'rw-paths', 'data-rw-scroll': `paths-${kind}` },
           el('div', { class: 'rw-dim', style: { padding: '4px 6px' } }, 'Список пуст'),
         );
       }
       return el(
         'div',
-        { class: 'rw-paths' },
+        { class: 'rw-paths', 'data-rw-scroll': `paths-${kind}` },
         ...list.map((path, index) => {
           if (edit && edit.kind === kind && edit.index === index) {
             return el(
@@ -1803,31 +2541,81 @@ class App {
       ),
     );
 
-    const excludeInput = el('input', {
+    const targetInput = el('input', {
       type: 'text',
-      placeholder: 'например /server/*/cfg',
+      'data-rw-key': 'target',
+      placeholder: 'путь или маска, например /server/*/proceduralmap.*.sav',
+      value: draft.targetInput || '',
+      style: { flex: '1 1 220px', width: 'auto' },
+      oninput: (event) => {
+        draft.targetInput = event.target.value;
+      },
       onkeydown: (event) => {
         if (event.key !== 'Enter') return;
         event.preventDefault();
-        const value = event.target.value.trim();
-        if (!value) return;
-        if (!draft.excludes.includes(value)) draft.excludes.push(value);
-        this.render();
+        draft.targetInput = event.target.value;
+        if (this.addTarget(draft)) this.render();
+      },
+    });
+
+    // Набранный текст живёт в черновике: перерисовка (галочка, тост) его не стирает,
+    // а «Сохранить» добавит его в исключения, даже если Enter не нажат.
+    const excludeInput = el('input', {
+      type: 'text',
+      'data-rw-key': 'exclude',
+      placeholder: 'например /server/*/cfg',
+      value: draft.excludeInput || '',
+      style: { flex: '1 1 220px', width: 'auto' },
+      oninput: (event) => {
+        draft.excludeInput = event.target.value;
+      },
+      onkeydown: (event) => {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        draft.excludeInput = event.target.value;
+        if (this.addExclude(draft)) this.render();
       },
     });
 
     return el(
       'div',
-      { class: 'rw-overlay' },
+      { class: 'rw-overlay', 'data-rw-scroll': 'overlay', onkeydown: (event) => this.onModalKey(event) },
       el(
         'div',
-        { class: 'rw-modal wide' },
+        {
+          class: 'rw-modal wide',
+          'data-rw-scroll': 'modal',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': draft.id ? 'Изменить профиль вайпа' : 'Новый профиль вайпа',
+        },
         el(
           'div',
           { class: 'rw-modal-head' },
           el('h3', null, draft.id ? 'Изменить профиль вайпа' : 'Новый профиль вайпа'),
-          el('button', { class: 'rw-btn small', onclick: () => this.closeModal() }, 'Закрыть'),
+          el('button', { class: 'rw-btn small', onclick: () => this.requestCloseEditor() }, 'Закрыть'),
         ),
+        this.state.modal.conflict
+          ? el(
+              'div',
+              { class: 'rw-notice bad', style: { marginBottom: '12px' } },
+              el(
+                'div',
+                null,
+                'Профиль изменили в другом месте: в другой вкладке или другой админ. Ваши правки не сохранены.',
+              ),
+              el(
+                'div',
+                { class: 'rw-row', style: { marginTop: '8px' } },
+                el(
+                  'button',
+                  { class: 'rw-btn small', type: 'button', onclick: () => this.reopenFresh(draft.id) },
+                  'Загрузить новую версию',
+                ),
+                el('span', { class: 'rw-dim' }, 'Ваши правки в этом окне пропадут.'),
+              ),
+            )
+          : null,
         el(
           'div',
           { class: 'rw-form' },
@@ -1838,6 +2626,8 @@ class App {
             el('input', {
               type: 'text',
               value: draft.name,
+              'data-rw-key': 'name',
+              'data-rw-autofocus': '',
               placeholder: 'например Еженедельный вайп карты',
               oninput: (event) => {
                 draft.name = event.target.value;
@@ -1851,31 +2641,35 @@ class App {
             { class: 'rw-field full' },
             el('label', null, 'Что удалять (пути и маски)'),
             pathList(draft.targets, 'targets'),
+            // Путь или маска вручную — своим полем, а не системным окном prompt
+            // (на телефоне оно неудобно, а в части браузеров заблокировано).
             el(
               'div',
               { class: 'rw-row' },
-              el(
-                'button',
-                { class: 'rw-btn small', onclick: () => this.openPicker('targets') },
-                'Выбрать в файлах…',
-              ),
+              targetInput,
               el(
                 'button',
                 {
                   class: 'rw-btn small',
+                  type: 'button',
                   onclick: () => {
-                    const value = window.prompt('Путь или маска (например /server/*/proceduralmap.*.sav)');
-                    if (!value) return;
-                    const trimmed = value.trim();
-                    if (!trimmed) return;
-                    if (!draft.targets.includes(trimmed)) draft.targets.push(trimmed);
-                    this.render();
+                    if (this.addTarget(draft)) this.render();
                   },
                 },
-                'Добавить вручную',
+                'Добавить',
+              ),
+              el(
+                'button',
+                { class: 'rw-btn small', 'data-rw-key': 'pick-targets', onclick: () => this.openPicker('targets') },
+                'Выбрать в файлах…',
               ),
             ),
-            el('span', { class: 'rw-hint' }, 'Маски: * — любые символы в имени, ? — один символ, ** — любая глубина. Пресеты:'),
+            el(
+              'span',
+              { class: 'rw-hint' },
+              'Маски: * — любые символы в имени, ? — один символ, ** — любая глубина. ' +
+                '[*], [?] и [[] — сама звёздочка, вопрос или скобка в имени (так пишет пути выбор в файлах). Пресеты:',
+            ),
             el('div', { class: 'rw-row' }, ...presetButtons),
           ),
           el(
@@ -1883,11 +2677,32 @@ class App {
             { class: 'rw-field full' },
             el('label', null, 'Исключения (не удалять)'),
             pathList(draft.excludes, 'excludes'),
-            el('div', { class: 'rw-row' }, excludeInput),
+            el(
+              'div',
+              { class: 'rw-row' },
+              excludeInput,
+              el(
+                'button',
+                {
+                  class: 'rw-btn small',
+                  type: 'button',
+                  onclick: () => {
+                    if (this.addExclude(draft)) this.render();
+                  },
+                },
+                'Добавить',
+              ),
+              el(
+                'button',
+                { class: 'rw-btn small', type: 'button', 'data-rw-key': 'pick-excludes', onclick: () => this.openPicker('excludes') },
+                'Выбрать в файлах…',
+              ),
+            ),
             el(
               'span',
               { class: 'rw-hint' },
-              'Исключение каталога защищает и всё его содержимое. Enter — добавить.',
+              'Исключение каталога защищает и всё его содержимое. Текст из поля попадёт в список по Enter, ' +
+                '«Добавить» или при сохранении.',
             ),
           ),
           this.renderMapFields(draft),
@@ -1903,6 +2718,7 @@ class App {
                 { class: 'rw-check' },
                 el('input', {
                   type: 'checkbox',
+                  'data-rw-key': 'opt-stop',
                   checked: draft.options.stopServer ? '' : null,
                   onchange: (event) => {
                     draft.options.stopServer = event.target.checked;
@@ -1916,6 +2732,7 @@ class App {
                 { class: 'rw-check' },
                 el('input', {
                   type: 'checkbox',
+                  'data-rw-key': 'opt-start',
                   checked: draft.options.startServer ? '' : null,
                   onchange: (event) => {
                     draft.options.startServer = event.target.checked;
@@ -1929,32 +2746,42 @@ class App {
                 { class: 'rw-check' },
                 el('input', {
                   type: 'checkbox',
+                  'data-rw-key': 'opt-warn',
                   checked: draft.options.warnChat === false ? null : '',
                   onchange: (event) => {
                     draft.options.warnChat = event.target.checked;
                     this.render();
                   },
                 }),
-                'Предупреждать в чате сервера перед вайпом (за 5 минут, раз в минуту)',
+                `Предупреждать в чате сервера перед вайпом (за ${this.warningMinutes()} мин, раз в минуту)`,
               ),
+              this.state.status?.wipeWarning?.enabled === false
+                ? el(
+                    'span',
+                    { class: 'rw-hint rw-warn-text' },
+                    'Предупреждения выключены в настройках плагина: игроки ничего не получат, даже с этой галочкой.',
+                  )
+                : null,
               el(
                 'label',
                 { class: 'rw-check' },
                 el('input', {
                   type: 'checkbox',
+                  'data-rw-key': 'opt-dry',
                   checked: draft.options.dryRun ? '' : null,
                   onchange: (event) => {
                     draft.options.dryRun = event.target.checked;
                     this.render();
                   },
                 }),
-                'Только проверка (dry-run): ничего не удалять и не останавливать',
+                'Только проверка: ничего не удалять и не останавливать сервер',
               ),
               el(
                 'label',
                 { class: 'rw-check' },
                 el('input', {
                   type: 'checkbox',
+                  'data-rw-key': 'opt-enabled',
                   checked: draft.enabled ? '' : null,
                   onchange: (event) => {
                     draft.enabled = event.target.checked;
@@ -1970,6 +2797,7 @@ class App {
             { class: 'rw-field full' },
             el('label', null, 'Команды в консоль после запуска (по одной в строке)'),
             el('textarea', {
+              'data-rw-key': 'commands',
               placeholder: 'oxide.reload *',
               oninput: (event) => {
                 draft.options.commandsAfter = event.target.value
@@ -1978,13 +2806,13 @@ class App {
                   .filter(Boolean);
               },
             }, (draft.options.commandsAfter || []).join('\n')),
-            el('span', { class: 'rw-hint' }, 'Необязательно. Нужен console.write у API-ключа.'),
+            el('span', { class: 'rw-hint' }, 'Необязательно. API-ключу нужно право на консоль сервера.'),
           ),
         ),
         el(
           'div',
           { class: 'rw-modal-actions' },
-          el('button', { class: 'rw-btn', onclick: () => this.closeModal() }, 'Отмена'),
+          el('button', { class: 'rw-btn', onclick: () => this.requestCloseEditor() }, 'Отмена'),
           canManage
             ? el(
                 'button',
@@ -2001,6 +2829,24 @@ class App {
     );
   }
 
+  /** Перенести путь из поля «Что удалять» в список. true — список изменился. */
+  addTarget(draft) {
+    const value = String(draft.targetInput || '').trim();
+    if (!value) return false;
+    if (!draft.targets.includes(value)) draft.targets.push(value);
+    draft.targetInput = '';
+    return true;
+  }
+
+  /** Перенести текст из поля исключений в список. true — список изменился. */
+  addExclude(draft) {
+    const value = String(draft.excludeInput || '').trim();
+    if (!value) return false;
+    if (!draft.excludes.includes(value)) draft.excludes.push(value);
+    draft.excludeInput = '';
+    return true;
+  }
+
   async saveProfile() {
     const draft = this.draft();
     if (!draft) return;
@@ -2008,10 +2854,24 @@ class App {
       this.toast('bad', 'Укажите название профиля');
       return;
     }
+    // Путь в удаление сам не добавляется: это опасная сторона — пусть человек нажмёт «Добавить».
+    if (String(draft.targetInput || '').trim()) {
+      this.toast('bad', 'В поле «Что удалять» остался путь: нажмите «Добавить» или очистите поле');
+      return;
+    }
     if (!draft.targets.length) {
       this.toast('bad', 'Добавьте хотя бы один путь или маску');
       return;
     }
+    // Пустое поле не подменяется молча 05:00, 1, 7 или 3000 — просим заполнить.
+    const problem = draftProblem(draft);
+    if (problem) {
+      this.toast('bad', problem);
+      return;
+    }
+    // Исключение, набранное без Enter, не должно молча пропасть.
+    const pendingExclude = String(draft.excludeInput || '').trim();
+    this.addExclude(draft);
     this.state.busy = true;
     this.render();
     try {
@@ -2025,30 +2885,68 @@ class App {
         options: draft.options,
         map: draft.map,
       };
+      // Версия, которую видел редактор: если профиль успели изменить в другой
+      // вкладке, backend ответит 409, и старый черновик не затрёт чужую правку.
+      if (draft.id && draft.updatedAt) payload.expectedUpdatedAt = draft.updatedAt;
       const base = this.apiBase();
       if (draft.id) await api(`${base}/profiles/${encodeURIComponent(draft.id)}`, { method: 'PUT', body: payload });
       else await api(`${base}/profiles`, { method: 'POST', body: payload });
       this.state.busy = false;
       this.state.modal = null;
+      this.editing = null;
       await this.reload();
-      this.toast('ok', 'Профиль сохранён');
+      this.toast(
+        'ok',
+        pendingExclude ? `Профиль сохранён. Исключение из поля добавлено: ${pendingExclude}` : 'Профиль сохранён',
+      );
     } catch (error) {
       this.state.busy = false;
+      if (error.code === 'PROFILE_CHANGED' && this.state.modal?.type === 'editor') {
+        // Черновик не трогаем: человек решает сам — перечитать профиль или скопировать правки.
+        this.state.modal.conflict = true;
+      }
       this.toast('bad', error.message);
       this.render();
     }
   }
 
-  async toggleProfile(profile) {
+  /** Профиль изменили в другом месте: перечитать его и открыть редактор заново. */
+  async reopenFresh(profileId) {
+    this.state.modal = null;
+    await this.reload();
+    const fresh = this.state.profiles.find((item) => item.id === profileId);
+    if (fresh) this.openEditor(fresh);
+    else this.toast('bad', 'Профиль не найден — возможно, его удалили');
+  }
+
+  /**
+   * Выполнить запрос по профилю один раз: пока он в пути, кнопки профиля
+   * неактивны и повторное нажатие ничего не отправляет.
+   */
+  async withProfilePending(profile, action) {
+    if (this.state.pending.has(profile.id)) return;
+    this.state.pending.add(profile.id);
+    this.render();
     try {
-      await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}`, {
-        method: 'PUT',
-        body: { enabled: !profile.enabled },
-      });
-      await this.reload();
-    } catch (error) {
-      this.toast('bad', error.message);
+      await action();
+    } finally {
+      this.state.pending.delete(profile.id);
+      this.render();
     }
+  }
+
+  async toggleProfile(profile) {
+    await this.withProfilePending(profile, async () => {
+      try {
+        await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}`, {
+          method: 'PUT',
+          body: { enabled: !profile.enabled },
+        });
+        await this.reload();
+      } catch (error) {
+        this.toast('bad', error.message);
+      }
+    });
   }
 
   confirmDelete(profile) {
@@ -2057,31 +2955,102 @@ class App {
       title: 'Удалить профиль?',
       text: `Профиль «${profile.name}» будет удалён. История прогонов останется.`,
       confirmLabel: 'Удалить профиль',
-      onConfirm: async () => {
-        try {
-          await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}`, { method: 'DELETE' });
-          await this.reload();
-          this.toast('ok', 'Профиль удалён');
-        } catch (error) {
-          this.toast('bad', error.message);
-        }
-      },
+      onConfirm: () =>
+        this.withProfilePending(profile, async () => {
+          try {
+            await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}`, { method: 'DELETE' });
+            await this.reload();
+            this.toast('ok', 'Профиль удалён');
+          } catch (error) {
+            this.toast('bad', error.message);
+          }
+        }),
+    };
+    this.render();
+  }
+
+  /** Что сделает боевой вайп — для окна подтверждения, обычными словами. */
+  runConsequences(profile) {
+    const options = profile.options || {};
+    if (options.dryRun || this.state.status?.dryRun) {
+      return [
+        'Включена «только проверка»: ничего не удалится, сервер не остановится.',
+        'В истории появится запись проверки.',
+      ];
+    }
+    const serverName = this.state.server?.name || profile.serverName || 'этого сервера';
+    const items = [];
+    // Без остановки backend не удаляет файлы на работающем сервере — вайп сразу отказывает.
+    items.push(
+      options.stopServer === false
+        ? 'Остановка выключена в профиле: если сервер работает, вайп не начнётся.'
+        : `Сервер «${serverName}» остановится, игроков отключит.`,
+    );
+    items.push(
+      `Удалятся файлы и папки по путям профиля (путей: ${(profile.targets || []).length}). ` +
+        'Папка удаляется целиком, со всем, что внутри.',
+    );
+    items.push('Вернуть удалённое нельзя.');
+    if (profile.mapText) items.push(`Карта: ${profile.mapText}.`);
+    items.push(
+      options.startServer === false
+        ? 'Запуск выключен в профиле: после вайпа сервер не запустится.'
+        : 'После вайпа сервер запустится.',
+    );
+    const commands = options.commandsAfter || [];
+    if (commands.length) items.push(`После запуска в консоль уйдут команды (${commands.length}).`);
+    return items;
+  }
+
+  /** Боевой вайп — только после окна с последствиями и кнопкой «Отмена». */
+  confirmRun(profile) {
+    this.state.modal = {
+      type: 'confirm',
+      title: `Вайп сейчас: «${profile.name}»?`,
+      items: this.runConsequences(profile),
+      note: 'Сначала можно посмотреть «Что будет удалено» или запустить проверку.',
+      confirmLabel: 'Вайп сейчас',
+      onConfirm: () => this.runProfile(profile, false),
     };
     this.render();
   }
 
   async runProfile(profile, dryRun = false) {
-    try {
-      const result = await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}/run`, {
-        method: 'POST',
-        body: dryRun ? { dryRun: true } : {},
-      });
-      this.toast('ok', result.message || 'Вайп запущен');
-      setTimeout(() => this.refreshRuns(), 2500);
-      setTimeout(() => this.refreshRuns(), 9000);
-    } catch (error) {
-      this.toast('bad', error.message);
-    }
+    // Второе нажатие, пока первый запрос в пути, ничего не отправляет.
+    await this.withProfilePending(profile, async () => {
+      try {
+        // dryRun — строго true или false (договорённость К5).
+        const result = await api(`${this.apiBase()}/profiles/${encodeURIComponent(profile.id)}/run`, {
+          method: 'POST',
+          body: { dryRun: Boolean(dryRun) },
+        });
+        // Текст — по тому, что реально запущено: профиль с «Только проверка»
+        // или глобальная проверка превращают и «Вайп сейчас» в проверку.
+        const isCheck = typeof result?.dryRun === 'boolean' ? result.dryRun : Boolean(dryRun);
+        this.toast(
+          'ok',
+          isCheck
+            ? 'Проверка запущена: ничего не удаляется. Итог появится в истории прогонов.'
+            : 'Вайп запущен. Итог появится в истории прогонов.',
+        );
+        // Прогон идёт в фоне: держим профиль занятым и опрашиваем, пока он не кончится.
+        const shown = this.state.profiles.find((item) => item.id === profile.id);
+        if (shown) {
+          shown.running = true;
+          // Только для вкладки: что запущено — пока записи прогона в истории ещё нет.
+          shown.runningCheck = isCheck;
+        }
+        this.schedulePoll();
+      } catch (error) {
+        this.toast('bad', error.message);
+      }
+    });
+  }
+
+  /** За сколько минут до вайпа идут предупреждения — из настроек плагина. */
+  warningMinutes() {
+    const minutes = Number(this.state.status?.wipeWarning?.minutes);
+    return Number.isFinite(minutes) && minutes > 0 ? minutes : 5;
   }
 
   /** Проверка доставки предупреждения: одно сообщение в чат прямо сейчас. */
@@ -2090,7 +3059,12 @@ class App {
     this.render();
     try {
       const data = await api(`${this.apiBase()}/warn-test`, { method: 'POST' });
-      this.toast('ok', `В чат отправлено: ${data?.text || 'предупреждение'}`);
+      const off = this.state.status?.wipeWarning?.enabled === false;
+      this.toast(
+        off ? 'warn' : 'ok',
+        `В чат отправлено: ${data?.text || 'предупреждение'}` +
+          (off ? '. Но перед вайпом предупреждения не уйдут: они выключены в настройках плагина.' : ''),
+      );
     } catch (error) {
       this.toast('bad', `Не отправлено: ${error.message}`);
     }
@@ -2113,11 +3087,16 @@ class App {
 
   renderPreviewModal() {
     const { profile, data } = this.state.preview;
-    const paths = data.paths || [];
+    const paths = Array.isArray(data.paths) ? data.paths : [];
+    // Договорённость К2: какие пути — папки и что пропущено (старый backend этого не отдаёт).
+    const folders = new Set(Array.isArray(data.directories) ? data.directories : []);
+    const skipped = Array.isArray(data.skipped) ? data.skipped.filter((item) => item && item.path) : [];
     return el(
       'div',
       {
         class: 'rw-overlay',
+        'data-rw-scroll': 'overlay',
+        onkeydown: (event) => this.onModalKey(event),
         onclick: (event) => {
           if (event.target === event.currentTarget) {
             this.state.preview = null;
@@ -2127,7 +3106,13 @@ class App {
       },
       el(
         'div',
-        { class: 'rw-modal wide' },
+        {
+          class: 'rw-modal wide',
+          'data-rw-scroll': 'modal',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': `Что будет удалено — ${profile.name}`,
+        },
         el(
           'div',
           { class: 'rw-modal-head' },
@@ -2136,6 +3121,7 @@ class App {
             'button',
             {
               class: 'rw-btn small',
+              'data-rw-autofocus': '',
               onclick: () => {
                 this.state.preview = null;
                 this.render();
@@ -2154,13 +3140,76 @@ class App {
               (data.server?.status ? ` (${statusLabel(data.server.status)})` : ''),
           ),
           el('span', null, `Найдено путей: ${data.count ?? paths.length}`),
+          folders.size ? el('span', null, `из них папок: ${folders.size}`) : null,
         ),
         data.truncated
-          ? el('div', { class: 'rw-notice warn' }, 'Список обрезан лимитом (500 путей) — часть файлов не показана.')
+          ? el(
+              'div',
+              { class: 'rw-notice bad', style: { marginBottom: '8px' } },
+              `Список неполный: ${this.limitText(data.limitHit)}. Вайп с такими путями не пойдёт — ничего не удалится. ` +
+                'Сузьте маски или добавьте исключения.',
+            )
           : null,
-        el('div', { class: 'rw-pre' }, paths.length ? paths.join('\n') : 'Ничего не найдено — проверьте маски.'),
+        // Пропущенное (возможная ссылка, имя, которое нельзя передать агенту точно)
+        // останавливает весь вайп: лучше не вайпать, чем вайпнуть наполовину.
+        skipped.length
+          ? el(
+              'div',
+              { class: 'rw-notice bad', style: { marginBottom: '8px' } },
+              `Пропущено путей: ${skipped.length}. Пока они есть, вайп не начнётся — ничего не удалится. ` +
+                'Смените права на 644 для файла и 755 для папки, переименуйте файл или добавьте путь ' +
+                'в исключения (причины — ниже).',
+            )
+          : null,
+        folders.size
+          ? el(
+              'div',
+              { class: 'rw-notice warn', style: { marginBottom: '8px' } },
+              'Папка в списке удаляется целиком, со всем, что внутри: файлами и вложенными папками.',
+            )
+          : null,
+        paths.length
+          ? el(
+              'div',
+              { class: 'rw-pre' },
+              // Каталоги помечены (договорённость К2): одна строка в окне — это вся папка.
+              ...paths.map((path) =>
+                el(
+                  'div',
+                  null,
+                  path,
+                  folders.has(path)
+                    ? el('span', { class: 'rw-warn-text' }, '  — папка: удалится целиком со всем содержимым')
+                    : null,
+                ),
+              ),
+            )
+          : el('div', { class: 'rw-pre' }, 'Ничего не найдено — проверьте маски.'),
+        skipped.length
+          ? el(
+              'details',
+              // Раскрыт сразу: из-за этих путей вайп не пойдёт.
+              { class: 'rw-details', style: { marginTop: '8px' }, open: '' },
+              el('summary', null, `Пропущено: ${skipped.length}`),
+              el(
+                'div',
+                { class: 'rw-pre' },
+                skipped.map((item) => `${item.path}${item.reason ? ` — ${sentence(item.reason)}` : ''}`).join('\n'),
+              ),
+            )
+          : null,
       ),
     );
+  }
+
+  /** Какой предел поиска путей сработал — обычными словами. */
+  limitText(limitHit) {
+    const kind = limitHit && typeof limitHit === 'object' ? limitHit.kind : null;
+    const detail = limitHit?.detail ? ` (${limitHit.detail})` : '';
+    if (kind === 'matches') return `найдено больше путей, чем можно удалить за один вайп${detail}`;
+    if (kind === 'listings') return `просмотрено слишком много каталогов${detail}`;
+    if (kind === 'depth') return `маска уходит слишком глубоко во вложенные папки${detail}`;
+    return 'сработал предел поиска путей (500 путей или 250 просмотров каталогов)';
   }
 
   // ── Файловый пикер ──────────────────────────────────────────────────────
@@ -2176,6 +3225,8 @@ class App {
       type: 'picker',
       mode,
       draft,
+      // Окно редактора, куда вернуться (то же самое: с пометками и прокруткой).
+      parent: this.state.modal,
       serverId: draft.serverId,
       path: '/',
       entries: [],
@@ -2210,6 +3261,59 @@ class App {
     this.render();
   }
 
+  /**
+   * Кнопки пикера. kind: 'selected' — отмеченное (или текущий каталог, если
+   * ничего не отмечено), 'inside' — «всё внутри» текущего каталога. Пути
+   * буквальные (literalPath). Если в удаление попадает папка, сначала окно
+   * с последствиями: папка удаляется целиком, со всем содержимым.
+   */
+  pickerChoose(kind) {
+    const picker = this.state.modal;
+    if (!picker || picker.type !== 'picker') return;
+    let paths;
+    const folders = [];
+    // Корень сервера целиком — ни «текущий каталог», ни «всё внутри».
+    if (picker.path === '/' && (kind === 'inside' || !picker.selected.size)) return;
+    if (kind === 'inside') {
+      paths = [`${literalPath(picker.path)}/*`];
+      folders.push(
+        `Всё содержимое папки «${picker.path}» будет удаляться при каждом вайпе: файлы и вложенные папки целиком. ` +
+          'Сама папка останется.',
+      );
+    } else {
+      const raw = picker.selected.size ? [...picker.selected] : [picker.path];
+      paths = raw.map(literalPath);
+      for (const path of raw) {
+        const entry = picker.entries.find((item) => item.path === path);
+        const isFolder = picker.selected.size ? Boolean(entry?.isDirectory) : true;
+        if (isFolder) folders.push(`«${path}» — папка: при вайпе удалится целиком, со всем, что внутри.`);
+      }
+    }
+    // Исключения защищают — для них подтверждение не нужно.
+    if (picker.mode !== 'targets' || !folders.length) {
+      this.pickerAdd(paths);
+      return;
+    }
+    this.state.modal = {
+      type: 'confirm',
+      title: folders.length > 1 ? 'Добавить папки в удаление?' : 'Добавить папку в удаление?',
+      items: [...folders, 'Вернуть удалённое нельзя.'],
+      note:
+        'Чтобы удалять только часть папки, откройте её и отметьте нужные файлы. ' +
+        'Перед вайпом список можно проверить в «Что будет удалено».',
+      confirmLabel: 'Добавить',
+      onConfirm: () => {
+        this.state.modal = picker;
+        this.pickerAdd(paths);
+      },
+      onCancel: () => {
+        this.state.modal = picker;
+        this.render();
+      },
+    };
+    this.render();
+  }
+
   pickerAdd(paths) {
     const picker = this.state.modal;
     if (!picker || picker.type !== 'picker') return;
@@ -2223,7 +3327,7 @@ class App {
         added += 1;
       }
     }
-    this.state.modal = { type: 'editor', draft };
+    this.state.modal = picker.parent || { type: 'editor', draft };
     this.render();
     this.toast(added ? 'ok' : 'warn', added ? `Добавлено путей: ${added}` : 'Эти пути уже добавлены');
   }
@@ -2269,7 +3373,7 @@ class App {
                 style: {
                   border: 'none',
                   background: 'transparent',
-                  color: 'var(--rw-accent)',
+                  color: 'var(--rw-primary)',
                   font: 'inherit',
                   textAlign: 'left',
                   cursor: 'pointer',
@@ -2282,16 +3386,22 @@ class App {
           );
 
     const rows = picker.entries.map((entry) => {
+      // Имя, которое панель передала бы агенту не так («\» в имени, пробел в конце;
+      // причину присылает backend), — удалился бы другой путь. Такое имя не
+      // отмечается, а в такой каталог не зайти: панель открыла бы другой.
+      const problem = entry.nameProblem ? sentence(entry.nameProblem) : '';
       const checkbox = el('input', {
         type: 'checkbox',
         checked: picker.selected.has(entry.path) ? '' : null,
+        disabled: problem ? '' : null,
+        title: problem || null,
         onchange: (event) => {
           if (event.target.checked) picker.selected.add(entry.path);
           else picker.selected.delete(entry.path);
           this.render();
         },
       });
-      const name = entry.isDirectory
+      const name = entry.isDirectory && !problem
         ? el(
             'button',
             {
@@ -2309,14 +3419,16 @@ class App {
             },
             entry.name,
           )
-        : el('span', { class: 'rw-pname' }, entry.name);
+        : el('span', { class: 'rw-pname', title: problem || null }, entry.name);
       return el(
         'div',
-        { class: 'rw-picker-row' },
+        { class: 'rw-picker-row', title: problem || null, style: problem ? { flexWrap: 'wrap' } : null },
         checkbox,
         el('span', { class: 'rw-ico', text: entry.isDirectory ? '📁' : '📄' }),
         name,
         entry.isDirectory ? null : el('span', { class: 'rw-psize', text: bytes(entry.size) }),
+        // Причина — второй строкой: на телефоне подсказки при наведении нет.
+        problem ? el('span', { class: 'rw-hint', style: { flexBasis: '100%' } }, problem) : null,
       );
     });
 
@@ -2326,19 +3438,27 @@ class App {
       'div',
       {
         class: 'rw-overlay',
+        'data-rw-scroll': 'overlay',
+        onkeydown: (event) => this.onModalKey(event),
         onclick: (event) => {
           if (event.target === event.currentTarget) this.backToEditor();
         },
       },
       el(
         'div',
-        { class: 'rw-modal wide' },
+        {
+          class: 'rw-modal wide',
+          'data-rw-scroll': 'modal',
+          role: 'dialog',
+          'aria-modal': 'true',
+          'aria-label': picker.mode === 'targets' ? 'Выбор файлов и каталогов для удаления' : 'Выбор исключений',
+        },
         el(
           'div',
           { class: 'rw-modal-head' },
           el(
             'button',
-            { class: 'rw-btn small', onclick: () => this.backToEditor() },
+            { class: 'rw-btn small', 'data-rw-autofocus': '', onclick: () => this.backToEditor() },
             '← Назад к профилю',
           ),
           el(
@@ -2352,7 +3472,8 @@ class App {
         picker.error ? el('div', { class: 'rw-notice bad', style: { marginTop: '8px' } }, picker.error) : null,
         el(
           'div',
-          { class: 'rw-picker-list' },
+          // В ключе — каталог: новый каталог открывается с начала списка.
+          { class: 'rw-picker-list', 'data-rw-scroll': `picker-list:${picker.path}` },
           picker.loading
             ? el('div', { class: 'rw-dim', style: { padding: '12px' } }, 'Читаю каталог…')
             : [
@@ -2370,8 +3491,14 @@ class App {
             'button',
             {
               class: 'rw-btn',
-              disabled: picker.loading,
-              onclick: () => this.pickerAdd(picker.selected.size ? [...picker.selected] : [picker.path]),
+              // Корень сервера целиком добавить нельзя (backend его всё равно выбросит).
+              disabled: picker.loading || (!selectedCount && picker.path === '/'),
+              title:
+                !selectedCount && picker.path === '/'
+                  ? 'Нельзя добавить весь корень сервера — выберите каталог или отметьте файлы'
+                  : null,
+              // Выбранное — буквальные пути: «*» и «?» в именах не становятся маской.
+              onclick: () => this.pickerChoose('selected'),
             },
             selectedCount ? `Добавить выбранные (${selectedCount})` : 'Добавить текущий каталог',
           ),
@@ -2384,7 +3511,8 @@ class App {
                 picker.path === '/'
                   ? 'Нельзя добавить маску на весь корень сервера — выберите каталог'
                   : 'Добавить «всё содержимое» текущего каталога',
-              onclick: () => this.pickerAdd([`${picker.path === '/' ? '' : picker.path}/*`]),
+              // Имя каталога — буквально, маска только «/*» в конце.
+              onclick: () => this.pickerChoose('inside'),
             },
             'Добавить маску «всё внутри»',
           ),
@@ -2407,13 +3535,35 @@ class App {
 
 // ── Точка входа ───────────────────────────────────────────────────────────
 
+/** Работающие экземпляры вкладки этого бандла. */
+const liveApps = new Set();
+
+/** Остановить экземпляры, чей узел ушёл со страницы. */
+function sweepApps() {
+  for (const app of [...liveApps]) {
+    if (!app.root.isConnected) app.dispose();
+  }
+}
+
 function mountRoot(node, serverId) {
-  if (!node) return;
-  if (node.dataset.rwMounted === '1' && node.dataset.rwServer === serverId) return;
+  if (!node) {
+    // React снял ref: при простой перерисовке узел тот же и останется на
+    // странице, а при уходе со вкладки его уже не будет — проверим позже.
+    setTimeout(sweepApps, 0);
+    return;
+  }
+  // Один экземпляр на узел. Панель может сменить сервер на той же вкладке
+  // (тот же узел, другой serverId) — тогда старый экземпляр останавливаем,
+  // иначе его таймеры рисуют чужие профили под шапкой нового сервера.
+  const current = node.__rwApp;
+  if (current && !current.disposed && current.serverId === serverId) return;
+  if (current) current.dispose();
   node.dataset.rwMounted = '1';
   node.dataset.rwServer = serverId;
   node.dataset.rwTheme = detectTheme();
   const app = new App(node, serverId);
+  node.__rwApp = app;
+  liveApps.add(app);
   void app.start();
 }
 
@@ -2463,7 +3613,7 @@ function detectTheme() {
 
 const manifest = {
   name: 'rust-autowipe',
-  version: '1.5.6',
+  version: '1.6.0',
   displayName: 'Rust AutoWipe',
   description: 'Расписание вайпов Rust и удаление выбранных файлов/каталогов для конкретного сервера',
   author: 'H1NZON',
@@ -2484,6 +3634,11 @@ function ServerTab(props) {
 
 export default {
   manifest,
+  // Панель вызывает onUnmount у старого бандла, когда подменяет его новым
+  // «на лету» (plugin_updated): останавливаем все экземпляры старой версии.
+  onUnmount() {
+    for (const app of [...liveApps]) app.dispose();
+  },
   tabs: [
     {
       id: 'rust-autowipe-server',

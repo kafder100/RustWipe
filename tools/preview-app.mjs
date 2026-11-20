@@ -4,9 +4,17 @@
  * Нужен, чтобы снимать скриншоты и проверять вёрстку без установки в панель.
  *
  * Запуск: node tools/preview-app.mjs [port]
+ *
+ * Сервер слушает только 127.0.0.1 и отдаёт ровно два файла стенда из .preview/:
+ * index.html (он же «/») и frontend.mjs. Любой другой путь — 404, чужой
+ * заголовок Host — 403 (защита от подмены адреса через DNS). Поэтому файлы
+ * вне .preview/ (например, .github-token в корне проекта) стенд не отдаёт.
+ *
+ * Импорт файла (например, в тесте) ничего не создаёт и сервер не запускает:
+ * это делает только запуск через node.
  */
 import { createServer } from 'node:http';
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -14,9 +22,6 @@ const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '..');
 const outDir = resolve(root, '.preview');
 const pluginFile = resolve(root, 'rust-autowipe/frontend/frontend.mjs');
-
-mkdirSync(outDir, { recursive: true });
-copyFileSync(pluginFile, resolve(outDir, 'frontend.mjs'));
 
 const now = Date.now();
 const iso = (minutesAgo) => new Date(now - minutesAgo * 60000).toISOString();
@@ -168,22 +173,56 @@ window.__previewReady = true;
 </script>
 </body></html>`;
 
-writeFileSync(resolve(outDir, 'index.html'), html, 'utf8');
+// Что отдаёт стенд: адрес → файл в .preview/ и его тип. Больше ничего.
+const FILES = {
+  '/': ['index.html', 'text/html; charset=utf-8'],
+  '/index.html': ['index.html', 'text/html; charset=utf-8'],
+  '/frontend.mjs': ['frontend.mjs', 'text/javascript; charset=utf-8'],
+};
+const LOCAL_HOSTS = new Set(['127.0.0.1', 'localhost', '[::1]']);
 
-const port = Number(process.argv[2] || 4173);
-const types = { '.html': 'text/html; charset=utf-8', '.mjs': 'text/javascript; charset=utf-8', '.js': 'text/javascript; charset=utf-8' };
-
-createServer((req, res) => {
-  const path = req.url.split('?')[0];
-  const file = path === '/' ? 'index.html' : path.replace(/^\/+/, '');
+/** Обработчик запросов стенда: только файлы из FILES и только при локальном Host. */
+export function servePreview(req, res, dir = outDir) {
+  const host = String(req.headers?.host || '').toLowerCase().replace(/:\d+$/, '');
+  if (!LOCAL_HOSTS.has(host)) {
+    res.writeHead(403).end('forbidden');
+    return;
+  }
+  const file = FILES[String(req.url || '').split('?')[0]];
+  if (!file || (req.method !== 'GET' && req.method !== 'HEAD')) {
+    res.writeHead(404).end('not found');
+    return;
+  }
   try {
-    const body = readFileSync(resolve(outDir, file));
-    const ext = file.includes('.') ? file.slice(file.lastIndexOf('.')) : '.html';
-    res.writeHead(200, { 'content-type': types[ext] || 'application/octet-stream', 'cache-control': 'no-store' });
+    const body = readFileSync(resolve(dir, file[0]));
+    res.writeHead(200, { 'content-type': file[1], 'cache-control': 'no-store' });
     res.end(body);
   } catch {
     res.writeHead(404).end('not found');
   }
-}).listen(port, '127.0.0.1', () => {
-  console.log(`preview: http://127.0.0.1:${port}/`);
-});
+}
+
+function main() {
+  mkdirSync(outDir, { recursive: true });
+  copyFileSync(pluginFile, resolve(outDir, 'frontend.mjs'));
+  writeFileSync(resolve(outDir, 'index.html'), html, 'utf8');
+
+  const port = Number(process.argv[2] || 4173);
+  createServer((req, res) => servePreview(req, res)).listen(port, '127.0.0.1', () => {
+    console.log(`preview: http://127.0.0.1:${port}/`);
+  });
+}
+
+/** Файл запущен через node (а не импортирован)? */
+function startedDirectly() {
+  if (!process.argv[1]) return false;
+  try {
+    const self = realpathSync(fileURLToPath(import.meta.url));
+    const entry = realpathSync(resolve(process.argv[1]));
+    return process.platform === 'win32' ? self.toLowerCase() === entry.toLowerCase() : self === entry;
+  } catch {
+    return false;
+  }
+}
+
+if (startedDirectly()) main();
